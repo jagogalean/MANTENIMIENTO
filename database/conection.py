@@ -99,3 +99,50 @@ def update_repuesto(repuesto_id: str, patch: dict):
 def insert_ot_repuesto(data: dict):
     response = supabase.table("ot_repuestos").insert(data).execute()
     return response.data
+
+def get_ot_repuestos():
+    response = supabase.table("ot_repuestos").select("*").execute()
+    return response.data
+
+# ----------------- CRUD TÉCNICOS -----------------
+def get_tecnicos():
+    response = supabase.table("tecnicos").select("*").order("id", desc=True).execute()
+    return response.data
+
+def insert_tecnico(data: dict):
+    response = supabase.table("tecnicos").insert(data).execute()
+    return response.data
+
+def delete_tecnico(tecnico_id: str):
+    response = supabase.table("tecnicos").delete().eq("id", tecnico_id).execute()
+    return response.data
+
+# ----------------- CRUD PLAN DE MANTENIMIENTO PREVENTIVO -----------------
+def get_planes():
+    response = supabase.table("planes_mantenimiento").select("*").order("proxima_ejecucion", desc=False).execute()
+    return response.data
+
+def insert_plan(data: dict):
+    response = supabase.table("planes_mantenimiento").insert(data).execute()
+    return response.data
+
+def update_plan(plan_id: str, patch: dict):
+    response = supabase.table("planes_mantenimiento").update(patch).eq("id", plan_id).execute()
+    return response.data
+
+def delete_plan(plan_id: str):
+    response = supabase.table("planes_mantenimiento").delete().eq("id", plan_id).execute()
+    return response.data
+
+# ----------------- CRUD DOCUMENTOS TÉCNICOS POR MÁQUINA -----------------
+def get_documentos():
+    response = supabase.table("documentos_maquina").select("*").order("id", desc=True).execute()
+    return response.data
+
+def insert_documento(data: dict):
+    response = supabase.table("documentos_maquina").insert(data).execute()
+    return response.data
+
+def delete_documento(documento_id: str):
+    response = supabase.table("documentos_maquina").delete().eq("id", documento_id).execute()
+    return response.data
