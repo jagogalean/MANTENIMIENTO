@@ -1,6 +1,9 @@
 import streamlit as st
 # Esta es la ruta corregida sin el ".connection" intermedio
-from database.conection import get_maquinas, get_fallas, get_checklists, get_terceros, get_ots, get_repuestos
+from database.conection import (
+    get_maquinas, get_fallas, get_checklists, get_terceros, get_ots, get_repuestos,
+    get_tecnicos, get_planes, get_documentos, get_ot_repuestos
+)
 from views.dashboard import render_dashboard
 from views.maquinas import render_maquinas
 from views.fallas import render_fallas
@@ -8,7 +11,10 @@ from views.checklists import render_checklists
 from views.terceros import render_terceros
 from views.ots import render_ots
 from views.repuestos import render_repuestos
-from datetime import datetime
+from views.tecnicos import render_tecnicos
+from views.planes import render_planes
+from views.reportes import render_reportes
+from datetime import datetime, timedelta
 
 # Configuración de página
 st.set_page_config(
@@ -62,6 +68,14 @@ if "ots" not in st.session_state:
     st.session_state.ots = get_ots()
 if "repuestos" not in st.session_state:
     st.session_state.repuestos = get_repuestos()
+if "tecnicos" not in st.session_state:
+    st.session_state.tecnicos = get_tecnicos()
+if "planes" not in st.session_state:
+    st.session_state.planes = get_planes()
+if "documentos" not in st.session_state:
+    st.session_state.documentos = get_documentos()
+if "ot_repuestos" not in st.session_state:
+    st.session_state.ot_repuestos = get_ot_repuestos()
 
 # Helpers de cálculo de alertas para Badges de Navegación
 def days_until(date_str):
@@ -76,6 +90,14 @@ fallas_abiertas = len([f for f in st.session_state.fallas if f.get("estado") != 
 venc_proximos = len([t for t in st.session_state.terceros if days_until(t.get("proximoVencimiento")) is not None and days_until(t.get("proximoVencimiento")) <= 30])
 criticos_stock = len([r for r in st.session_state.repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)])
 
+def _dias_plan(fecha_str):
+    try:
+        return (datetime.strptime(fecha_str, "%Y-%m-%d").date() - datetime.now().date()).days
+    except (TypeError, ValueError):
+        return None
+
+planes_vencidos = len([p for p in st.session_state.planes if _dias_plan(p.get("proxima_ejecucion")) is not None and _dias_plan(p.get("proxima_ejecucion")) <= 7])
+
 # Sidebar de Navegación Nativa
 with st.sidebar:
     st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 14px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO by Javier Galeano</div>", unsafe_allow_html=True)
@@ -85,10 +107,12 @@ with st.sidebar:
     lbl_fallas = f"🚨 Fallas / RCA ({fallas_abiertas})" if fallas_abiertas > 0 else "📋 Fallas / RCA"
     lbl_terceros = f"🚚 Terceros ({venc_proximos})" if venc_proximos > 0 else "📦 Terceros"
     lbl_repuestos = f"🚨 Repuestos / Stock ({criticos_stock})" if criticos_stock > 0 else "🔩 Repuestos / Stock"
-    
+    lbl_planes = f"🚨 Plan Preventivo ({planes_vencidos})" if planes_vencidos > 0 else "🗓️ Plan Preventivo"
+
     opcion = st.radio(
         "Menú de Navegación",
-        ["Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos, lbl_fallas, "Recepción / Entrega", lbl_terceros],
+        ["Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos, lbl_fallas,
+         "Recepción / Entrega", lbl_terceros, lbl_planes, "👷 Técnicos", "📑 Reportes"],
         label_visibility="collapsed"
     )
 
@@ -107,3 +131,9 @@ elif "Recepción" in opcion:
     render_checklists()
 elif "Terceros" in opcion:
     render_terceros()
+elif "Plan Preventivo" in opcion:
+    render_planes()
+elif "Técnicos" in opcion:
+    render_tecnicos()
+elif "Reportes" in opcion:
+    render_reportes()
