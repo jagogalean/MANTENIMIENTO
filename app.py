@@ -98,6 +98,13 @@ def _dias_plan(fecha_str):
 
 planes_vencidos = len([p for p in st.session_state.planes if _dias_plan(p.get("proxima_ejecucion")) is not None and _dias_plan(p.get("proxima_ejecucion")) <= 7])
 
+# --- LECTURA DE QR: si la URL trae ?maquina_id=X&vista=checklist, saltar directo ---
+query_params = st.query_params
+if "maquina_id" in query_params:
+    st.session_state["qr_maquina_id"] = query_params["maquina_id"]
+    if query_params.get("vista") == "checklist":
+        st.session_state["forzar_vista"] = "Recepción / Entrega"
+
 # Sidebar de Navegación Nativa
 with st.sidebar:
     st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 14px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO by Javier Galeano</div>", unsafe_allow_html=True)
@@ -109,10 +116,17 @@ with st.sidebar:
     lbl_repuestos = f"🚨 Repuestos / Stock ({criticos_stock})" if criticos_stock > 0 else "🔩 Repuestos / Stock"
     lbl_planes = f"🚨 Plan Preventivo ({planes_vencidos})" if planes_vencidos > 0 else "🗓️ Plan Preventivo"
 
+    opciones_menu = ["Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos, lbl_fallas,
+                     "Recepción / Entrega", lbl_terceros, lbl_planes, "👷 Técnicos", "📑 Reportes"]
+
+    indice_default = 0
+    if st.session_state.get("forzar_vista") == "Recepción / Entrega":
+        indice_default = opciones_menu.index("Recepción / Entrega")
+
     opcion = st.radio(
         "Menú de Navegación",
-        ["Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos, lbl_fallas,
-         "Recepción / Entrega", lbl_terceros, lbl_planes, "👷 Técnicos", "📑 Reportes"],
+        opciones_menu,
+        index=indice_default,
         label_visibility="collapsed"
     )
 
