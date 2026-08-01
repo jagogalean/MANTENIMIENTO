@@ -10,11 +10,27 @@ def render_checklists():
     if not st.session_state.maquinas:
         st.warning("Carga al menos una máquina primero.")
         return
-        
-    if st.checkbox("+ Nuevo Registro de Turno"):
+
+    # Si se llegó acá escaneando el QR de una máquina, saltar directo al formulario
+    qr_maquina_id_raw = st.session_state.get("qr_maquina_id")
+    viene_de_qr = qr_maquina_id_raw is not None
+
+    mostrar_form = st.checkbox("+ Nuevo Registro de Turno", value=viene_de_qr)
+    if mostrar_form:
         with st.form("form_checklist", clear_on_submit=True):
             dict_m = {m["id"]: m["nombre"] for m in st.session_state.maquinas}
-            maquina_id = st.selectbox("Máquina *", list(dict_m.keys()), format_func=lambda x: dict_m[x])
+            ids_maquinas = list(dict_m.keys())
+
+            index_default = 0
+            if viene_de_qr:
+                try:
+                    qr_id_tipado = int(qr_maquina_id_raw) if isinstance(ids_maquinas[0], int) else qr_maquina_id_raw
+                    if qr_id_tipado in ids_maquinas:
+                        index_default = ids_maquinas.index(qr_id_tipado)
+                except (ValueError, IndexError):
+                    pass
+
+            maquina_id = st.selectbox("Máquina *", ids_maquinas, format_func=lambda x: dict_m[x], index=index_default)
             
             c1, c2 = st.columns(2)
             fecha = c1.date_input("Fecha", value=datetime.now().date()).strftime("%Y-%m-%d")
@@ -46,6 +62,9 @@ def render_checklists():
                 }
                 insert_checklist(payload)
                 st.session_state.checklists = get_checklists()
+                st.session_state.pop("qr_maquina_id", None)
+                st.session_state.pop("forzar_vista", None)
+                st.query_params.clear()
                 st.success("Checklist almacenado correctamente.")
                 st.rerun()
 
