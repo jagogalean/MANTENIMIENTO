@@ -57,6 +57,30 @@ def calcular_kpis_industriales(maquinas, fallas, ots):
         "horas_paro": horas_paro_totales
     }
 
+def calcular_ranking_maquinas(maquinas, ots, ot_repuestos, repuestos):
+    """Top máquinas por costo total (mano de obra + repuestos) y horas de paro."""
+    map_maquina = {m["id"]: m["nombre"] for m in maquinas}
+    map_costo_repuesto = {r["id"]: r.get("costo_unitario", 0) for r in repuestos}
+
+    costo_repuestos_por_ot = {}
+    for orr in ot_repuestos:
+        ot_id = orr.get("ot_id")
+        costo = orr.get("cantidad_usada", 0) * map_costo_repuesto.get(orr.get("repuesto_id"), 0)
+        costo_repuestos_por_ot[ot_id] = costo_repuestos_por_ot.get(ot_id, 0) + costo
+
+    acumulado = {}
+    for o in ots:
+        m_id = o.get("maquina_id")
+        m_nombre = map_maquina.get(m_id, "Desconocida")
+        if m_nombre not in acumulado:
+            acumulado[m_nombre] = {"nombre": m_nombre, "costo_total": 0, "horas_paro": 0}
+        acumulado[m_nombre]["costo_total"] += (o.get("costo_mano_obra", 0) or 0) + costo_repuestos_por_ot.get(o.get("id"), 0)
+        acumulado[m_nombre]["horas_paro"] += o.get("horas_paro", 0) or 0
+
+    ranking = sorted(acumulado.values(), key=lambda x: x["costo_total"], reverse=True)
+    return ranking[:5]
+
+
 def render_dashboard():
     st.title("Panel General")
     st.subheader("Indicadores clave de fiabilidad y estado del plan de mantenimiento.")
@@ -79,6 +103,9 @@ def render_dashboard():
     
     # Procesamiento de métricas avanzadas
     kpis = calcular_kpis_industriales(maquinas, fallas, ots)
+    ot_repuestos = st.session_state.get("ot_repuestos", [])
+    repuestos = st.session_state.get("repuestos", [])
+    ranking_maquinas = calcular_ranking_maquinas(maquinas, ots, ot_repuestos, repuestos)
     
     # --- FILA SUPERIOR: MÓDULOS DEL NEGOCIO ---
     col1, col2, col3, col4 = st.columns(4)
@@ -159,3 +186,17 @@ def render_dashboard():
                 color_lbl = "#EF4444" if d < 0 else "#F59E0B"
                 st.markdown(f"📦 **{t.get('nombre')}** ({t.get('servicio') or 'Soporte'}) — <span style='color:{color_lbl}; font-weight:bold;'>{lbl}</span>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- RANKING: MÁQUINAS QUE MÁS CONSUMEN RECURSOS ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 💰 Top Máquinas por Costo y Paro Acumulado")
+    if not ranking_maquinas:
+        st.info("Todavía no hay costos ni horas de paro registrados en OTs.")
+    else:
+        for r in ranking_maquinas:
+            st.markdown(f"""
+            <div class='industrial-panel'>
+                <strong>{r['nombre']}</strong><br>
+                <span>Costo acumulado: <strong>${r['costo_total']:,.2f}</strong> · Horas de paro: <strong>{r['horas_paro']}</strong></span>
+            </div>
+            """, unsafe_allow_html=True)
