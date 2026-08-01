@@ -74,6 +74,7 @@ def days_until(date_str):
 
 fallas_abiertas = len([f for f in st.session_state.fallas if f.get("estado") != "Cerrada"])
 venc_proximos = len([t for t in st.session_state.terceros if days_until(t.get("proximoVencimiento")) is not None and days_until(t.get("proximoVencimiento")) <= 30])
+criticos_stock = len([r for r in st.session_state.repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)])
 
 # Sidebar de Navegación Nativa
 with st.sidebar:
@@ -83,10 +84,11 @@ with st.sidebar:
     # Textos corregidos y limpios para el menú
     lbl_fallas = f"🚨 Fallas / RCA ({fallas_abiertas})" if fallas_abiertas > 0 else "📋 Fallas / RCA"
     lbl_terceros = f"🚚 Terceros ({venc_proximos})" if venc_proximos > 0 else "📦 Terceros"
+    lbl_repuestos = f"🚨 Repuestos / Stock ({criticos_stock})" if criticos_stock > 0 else "🔩 Repuestos / Stock"
     
     opcion = st.radio(
         "Menú de Navegación",
-        ["Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", "🔩 Repuestos / Stock", lbl_fallas, "Recepción / Entrega", lbl_terceros],
+        ["Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos, lbl_fallas, "Recepción / Entrega", lbl_terceros],
         label_visibility="collapsed"
     )
 
