@@ -1,3 +1,5 @@
 streamlit
 supabase
 qrcode[pil]
+pandas
+openpyxl
