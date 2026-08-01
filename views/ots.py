@@ -25,6 +25,7 @@ def render_ots():
     maquinas = st.session_state.get("maquinas", [])
     ots = st.session_state.get("ots", [])
     repuestos = st.session_state.get("repuestos", [])
+    tecnicos = st.session_state.get("tecnicos", [])
 
     if not maquinas:
         st.warning("⚠️ Debes registrar al menos una máquina antes de crear una OT.")
@@ -87,8 +88,16 @@ def render_ots():
         with col2:
             estado = st.selectbox("Estado Inicial", options=["Pendiente", "En Ejecucion", "Completada"])
             horas_paro = st.number_input("Horas de Paro (Afectación a Disponibilidad)", min_value=0.0, step=0.5)
+            dict_tecnicos = {t["nombre"]: t["id"] for t in tecnicos}
+            tecnico_sel = st.selectbox("Técnico Asignado", options=["Sin asignar"] + list(dict_tecnicos.keys()))
+            costo_mano_obra = st.number_input("Costo de Mano de Obra ($)", min_value=0.0, step=1.0)
 
         descripcion = st.text_area("Descripción del Trabajo / Alcance")
+
+        requiere_permiso = st.checkbox("⚠️ Esta OT requiere Permiso de Trabajo (LOTO / trabajo en altura / eléctrico)")
+        permiso_emitido = False
+        if requiere_permiso:
+            permiso_emitido = st.checkbox("✅ El permiso de trabajo ya fue emitido y firmado")
 
         submit = st.form_submit_button("Registrar Orden de Trabajo")
 
@@ -114,7 +123,11 @@ def render_ots():
                         "estado": estado,
                         "fecha_inicio": datetime.now().isoformat(),
                         "fecha_fin": datetime.now().isoformat() if estado == "Completada" else None,
-                        "horas_paro": horas_paro
+                        "horas_paro": horas_paro,
+                        "tecnico_id": dict_tecnicos.get(tecnico_sel) if tecnico_sel != "Sin asignar" else None,
+                        "costo_mano_obra": costo_mano_obra,
+                        "requiere_permiso_trabajo": requiere_permiso,
+                        "permiso_trabajo_emitido": permiso_emitido
                     }
                     ot_creada = insert_ot(nueva_ot)
                     ot_id = ot_creada[0]["id"] if ot_creada else None
@@ -127,13 +140,15 @@ def render_ots():
                         insert_ot_repuesto({
                             "ot_id": ot_id,
                             "repuesto_id": item["repuesto_id"],
-                            "cantidad": item["cantidad"]
+                            "cantidad_usada": item["cantidad"]
                         })
 
                     st.session_state.ots = get_ots()
                     st.session_state.repuestos = get_repuestos()
                     st.session_state.ot_carrito = []
                     st.success(f"✅ Orden {codigo_generado} registrada exitosamente.")
+                    if requiere_permiso and not permiso_emitido:
+                        st.warning("⚠️ Recordá emitir y firmar el Permiso de Trabajo antes de iniciar la tarea en campo.")
                     st.rerun()
 
     # --- HISTORIAL / TABLA DE OTS ---
@@ -144,13 +159,17 @@ def render_ots():
     else:
         tabla_ots = []
         map_m_nombre = {m["id"]: m["nombre"] for m in maquinas}
+        map_tec_nombre = {t["id"]: t["nombre"] for t in tecnicos}
         for o in ots:
             tabla_ots.append({
                 "Código": o.get("codigo"),
                 "Máquina": map_m_nombre.get(o.get("maquina_id"), "Desconocida"),
                 "Tipo": o.get("tipo_mantenimiento"),
                 "Estado": o.get("estado"),
+                "Técnico": map_tec_nombre.get(o.get("tecnico_id"), "Sin asignar"),
                 "Horas Paro": o.get("horas_paro"),
+                "Costo M.O.": o.get("costo_mano_obra", 0),
+                "Permiso Trabajo": "✅" if o.get("permiso_trabajo_emitido") else ("⚠️ Pendiente" if o.get("requiere_permiso_trabajo") else "—"),
                 "Descripción": o.get("descripcion")
             })
         st.dataframe(tabla_ots, use_container_width=True)
