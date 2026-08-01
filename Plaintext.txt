@@ -1,0 +1,4 @@
+streamlit>=1.30.0
+supabase>=2.3.0
+postgrest>=0.10.0
+pandas>=2.0.0
