@@ -1,5 +1,5 @@
 import streamlit as st
-from database.conection import insert_maquina, delete_maquina, get_maquinas
+from database.conection import insert_maquina, delete_maquina, get_maquinas, insert_documento, delete_documento, get_documentos
 
 CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
 
@@ -53,3 +53,35 @@ def render_maquinas():
                     delete_maquina(m.get('id'))
                     st.session_state.maquinas = get_maquinas()
                     st.rerun()
+
+            # --- DOCUMENTACIÓN TÉCNICA (manuales, planos, fichas) ---
+            docs_maquina = [d for d in st.session_state.get("documentos", []) if d.get("maquina_id") == m.get("id")]
+            with st.expander(f"📎 Documentos técnicos ({len(docs_maquina)})"):
+                if docs_maquina:
+                    for d in docs_maquina:
+                        col_d, col_x = st.columns([0.85, 0.15])
+                        col_d.markdown(f"[{d.get('nombre_archivo')}]({d.get('url')}) · {d.get('tipo') or 'General'}")
+                        if col_x.button("🗑️", key=f"del_doc_{d.get('id')}"):
+                            delete_documento(d.get('id'))
+                            st.session_state.documentos = get_documentos()
+                            st.rerun()
+                else:
+                    st.caption("Sin documentos cargados todavía.")
+
+                with st.form(f"form_doc_{m.get('id')}", clear_on_submit=True):
+                    nombre_doc = st.text_input("Nombre del documento", placeholder="Ej: Manual eléctrico Extrusora 02")
+                    url_doc = st.text_input("Link (Google Drive, OneDrive, etc.)")
+                    tipo_doc = st.selectbox("Tipo", ["Manual", "Plano", "Ficha Técnica", "Foto", "Otro"], key=f"tipo_doc_{m.get('id')}")
+                    if st.form_submit_button("Adjuntar documento"):
+                        if not nombre_doc.strip() or not url_doc.strip():
+                            st.error("❌ Nombre y link son obligatorios.")
+                        else:
+                            insert_documento({
+                                "maquina_id": m.get("id"),
+                                "nombre_archivo": nombre_doc,
+                                "url": url_doc,
+                                "tipo": tipo_doc
+                            })
+                            st.session_state.documentos = get_documentos()
+                            st.success("✅ Documento adjuntado.")
+                            st.rerun()
