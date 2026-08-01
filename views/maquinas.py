@@ -1,153 +1,125 @@
 import streamlit as st
-# Esta es la ruta corregida sin el ".connection" intermedio
-from database.conection import (
-    get_maquinas, get_fallas, get_checklists, get_terceros, get_ots, get_repuestos,
-    get_tecnicos, get_planes, get_documentos, get_ot_repuestos
-)
-from views.dashboard import render_dashboard
-from views.maquinas import render_maquinas
-from views.fallas import render_fallas
-from views.checklists import render_checklists
-from views.terceros import render_terceros
-from views.ots import render_ots
-from views.repuestos import render_repuestos
-from views.tecnicos import render_tecnicos
-from views.planes import render_planes
-from views.reportes import render_reportes
-from datetime import datetime, timedelta
+import qrcode
+from io import BytesIO
+from database.conection import insert_maquina, delete_maquina, get_maquinas, insert_documento, delete_documento, get_documentos
 
-# Configuración de página
-st.set_page_config(
-    page_title="CMMS Industrial MVP",
-    page_icon="⚙️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
 
-# Estética Industrial Oscura Personalizada
-st.markdown("""
-    <style>
-        /* Estilos base fondo y contenedores */
-        .stApp { background-color: #12171B; color: #E5E9EC; }
-        [data-testid="stSidebar"] { background-color: #0E1216; border-right: 1px solid #22282E; }
-        
-        /* Contenedores tipo Panel del MVP */
-        .industrial-panel {
-            background-color: #1B2127;
-            border: 1px solid #2A323A;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 12px;
-        }
-        
-        /* CORRECCIÓN: Forzar texto claro y legible en el menú de la barra lateral */
-        [data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
-            color: #E5E9EC !important;
-            font-size: 14px !important;
-            }
-        
-        /* Modificación de Inputs globales de Streamlit para acoplar al tema */
-        .stTextInput>div>div>input, .stSelectbox>div>div>div, .stTextArea>div>div>textarea {
-            background-color: #12171B !important;
-            border: 1px solid #2A323A !important;
-            color: #E5E9EC !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
 
-# Inicializar Estados de Sesión en Memoria (Sincronizados con Supabase)
-if "maquinas" not in st.session_state:
-    st.session_state.maquinas = get_maquinas()
-if "fallas" not in st.session_state:
-    st.session_state.fallas = get_fallas()
-if "checklists" not in st.session_state:
-    st.session_state.checklists = get_checklists()
-if "terceros" not in st.session_state:
-    st.session_state.terceros = get_terceros()
-if "ots" not in st.session_state:
-    st.session_state.ots = get_ots()
-if "repuestos" not in st.session_state:
-    st.session_state.repuestos = get_repuestos()
-if "tecnicos" not in st.session_state:
-    st.session_state.tecnicos = get_tecnicos()
-if "planes" not in st.session_state:
-    st.session_state.planes = get_planes()
-if "documentos" not in st.session_state:
-    st.session_state.documentos = get_documentos()
-if "ot_repuestos" not in st.session_state:
-    st.session_state.ot_repuestos = get_ot_repuestos()
+def generar_qr_png(url: str) -> bytes:
+    qr = qrcode.QRCode(box_size=10, border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
-# Helpers de cálculo de alertas para Badges de Navegación
-def days_until(date_str):
-    if not date_str: return None
-    try:
-        diff = datetime.strptime(date_str, "%Y-%m-%d").date() - datetime.date(datetime.now())
-        return diff.days
-    except:
-        return None
+def render_maquinas():
+    st.title("Máquinas")
+    st.write("Inventario base y criticidad operacional.")
 
-fallas_abiertas = len([f for f in st.session_state.fallas if f.get("estado") != "Cerrada"])
-venc_proximos = len([t for t in st.session_state.terceros if days_until(t.get("proximoVencimiento")) is not None and days_until(t.get("proximoVencimiento")) <= 30])
-criticos_stock = len([r for r in st.session_state.repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)])
-
-def _dias_plan(fecha_str):
-    try:
-        return (datetime.strptime(fecha_str, "%Y-%m-%d").date() - datetime.now().date()).days
-    except (TypeError, ValueError):
-        return None
-
-planes_vencidos = len([p for p in st.session_state.planes if _dias_plan(p.get("proxima_ejecucion")) is not None and _dias_plan(p.get("proxima_ejecucion")) <= 7])
-
-# --- LECTURA DE QR: si la URL trae ?maquina_id=X&vista=checklist, saltar directo ---
-query_params = st.query_params
-if "maquina_id" in query_params:
-    st.session_state["qr_maquina_id"] = query_params["maquina_id"]
-    if query_params.get("vista") == "checklist":
-        st.session_state["forzar_vista"] = "Recepción / Entrega"
-
-# Sidebar de Navegación Nativa
-with st.sidebar:
-    st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 14px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO by Javier Galeano</div>", unsafe_allow_html=True)
-    st.markdown("<div style='color: #5A6570; font-family: monospace; font-size: 10px; margin-bottom: 20px;'>MVP · v0.1 (Python)</div>", unsafe_allow_html=True)
+    with st.expander("⚙️ Configurar URL de la app (para los QR de Recepción/Entrega)"):
+        st.session_state["app_base_url"] = st.text_input(
+            "URL pública de tu app en Streamlit Cloud",
+            value=st.session_state.get("app_base_url", ""),
+            placeholder="https://tu-app.streamlit.app"
+        )
+        st.caption("Se necesita una sola vez. Es la URL que ves en el navegador cuando abrís tu app ya desplegada.")
     
-    # Textos corregidos y limpios para el menú
-    lbl_fallas = f"🚨 Fallas / RCA ({fallas_abiertas})" if fallas_abiertas > 0 else "📋 Fallas / RCA"
-    lbl_terceros = f"🚚 Terceros ({venc_proximos})" if venc_proximos > 0 else "📦 Terceros"
-    lbl_repuestos = f"🚨 Repuestos / Stock ({criticos_stock})" if criticos_stock > 0 else "🔩 Repuestos / Stock"
-    lbl_planes = f"🚨 Plan Preventivo ({planes_vencidos})" if planes_vencidos > 0 else "🗓️ Plan Preventivo"
+    # Formulario desplegable mediante checkbox de Streamlit
+    if st.checkbox("+ Nueva Máquina"):
+        with st.form("form_nueva_maquina", clear_on_submit=True):
+            nombre = st.text_input("Nombre / Tag *", placeholder="Ej: Extrusora 02")
+            codigo = st.text_input("Código Único *", placeholder="Ej: EXT-002")
+            seccion = st.text_input("Sección / Área", placeholder="Ej: Planta A - Línea 2")
+            criticidad = st.selectbox("Criticidad", ["A", "B", "C"], format_func=lambda x: CRIT_LABELS[x])
+            
+            submit = st.form_submit_button("Guardar Máquina")
+            if submit:
+                if not nombre.strip() or not codigo.strip():
+                    st.error("El nombre y el código de la máquina son obligatorios.")
+                else:
+                    # El ID no se envía en el payload ya que Supabase lo genera automáticamente como BIGINT
+                    payload = {
+                        "nombre": nombre,
+                        "codigo": codigo,
+                        "seccion": seccion,
+                        "criticidad": criticidad
+                    }
+                    insert_maquina(payload)
+                    st.session_state.maquinas = get_maquinas()
+                    st.success(f"Máquina '{nombre}' guardada con éxito.")
+                    st.rerun()
 
-    opciones_menu = ["Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos, lbl_fallas,
-                     "Recepción / Entrega", lbl_terceros, lbl_planes, "👷 Técnicos", "📑 Reportes"]
+    # Listado en Interfaz Industrial
+    st.markdown("<br>", unsafe_allow_html=True)
+    if not st.session_state.maquinas:
+        st.info("Todavía no has cargado ninguna máquina.")
+    else:
+        for m in st.session_state.maquinas:
+            col_info, col_action = st.columns([0.85, 0.15])
+            with col_info:
+                st.markdown(f"""
+                <div class='industrial-panel'>
+                    <strong>{m.get('nombre')}</strong> <small style='color:#38BDF8;'>[{m.get('codigo')}]</small> — 
+                    <small style='color:#7C8894;'>{m.get('seccion') or 'sin sección'}</small><br>
+                    <span>Criticidad: {CRIT_LABELS.get(m.get('criticidad'), m.get('criticidad'))}</span>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_action:
+                # Se utiliza el ID numérico de Supabase para la clave del botón
+                if st.button("🗑️ Eliminar", key=f"del_m_{m.get('id')}"):
+                    delete_maquina(m.get('id'))
+                    st.session_state.maquinas = get_maquinas()
+                    st.rerun()
 
-    indice_default = 0
-    if st.session_state.get("forzar_vista") == "Recepción / Entrega":
-        indice_default = opciones_menu.index("Recepción / Entrega")
+            # --- DOCUMENTACIÓN TÉCNICA (manuales, planos, fichas) ---
+            docs_maquina = [d for d in st.session_state.get("documentos", []) if d.get("maquina_id") == m.get("id")]
+            with st.expander(f"📎 Documentos técnicos ({len(docs_maquina)})"):
+                if docs_maquina:
+                    for d in docs_maquina:
+                        col_d, col_x = st.columns([0.85, 0.15])
+                        col_d.markdown(f"[{d.get('nombre_archivo')}]({d.get('url')}) · {d.get('tipo') or 'General'}")
+                        if col_x.button("🗑️", key=f"del_doc_{d.get('id')}"):
+                            delete_documento(d.get('id'))
+                            st.session_state.documentos = get_documentos()
+                            st.rerun()
+                else:
+                    st.caption("Sin documentos cargados todavía.")
 
-    opcion = st.radio(
-        "Menú de Navegación",
-        opciones_menu,
-        index=indice_default,
-        label_visibility="collapsed"
-    )
+                with st.form(f"form_doc_{m.get('id')}", clear_on_submit=True):
+                    nombre_doc = st.text_input("Nombre del documento", placeholder="Ej: Manual eléctrico Extrusora 02")
+                    url_doc = st.text_input("Link (Google Drive, OneDrive, etc.)")
+                    tipo_doc = st.selectbox("Tipo", ["Manual", "Plano", "Ficha Técnica", "Foto", "Otro"], key=f"tipo_doc_{m.get('id')}")
+                    if st.form_submit_button("Adjuntar documento"):
+                        if not nombre_doc.strip() or not url_doc.strip():
+                            st.error("❌ Nombre y link son obligatorios.")
+                        else:
+                            insert_documento({
+                                "maquina_id": m.get("id"),
+                                "nombre_archivo": nombre_doc,
+                                "url": url_doc,
+                                "tipo": tipo_doc
+                            })
+                            st.session_state.documentos = get_documentos()
+                            st.success("✅ Documento adjuntado.")
+                            st.rerun()
 
-# Enrutamiento de Módulos (Views)
-if "Panel General" in opcion:
-    render_dashboard()
-elif "Máquinas" in opcion:
-    render_maquinas()
-elif "Órdenes de Trabajo" in opcion:
-    render_ots()
-elif "Repuestos" in opcion:
-    render_repuestos()
-elif "Fallas" in opcion:
-    render_fallas()
-elif "Recepción" in opcion:
-    render_checklists()
-elif "Terceros" in opcion:
-    render_terceros()
-elif "Plan Preventivo" in opcion:
-    render_planes()
-elif "Técnicos" in opcion:
-    render_tecnicos()
-elif "Reportes" in opcion:
-    render_reportes()
+            # --- QR PARA RECEPCIÓN / ENTREGA DESDE LA MÁQUINA ---
+            with st.expander("📱 Código QR de Recepción / Entrega"):
+                base_url = st.session_state.get("app_base_url", "")
+                if not base_url:
+                    st.warning("Configurá la URL de tu app arriba (⚙️ Configurar URL) para poder generar el QR.")
+                else:
+                    url_qr = f"{base_url.rstrip('/')}/?maquina_id={m.get('id')}&vista=checklist"
+                    qr_bytes = generar_qr_png(url_qr)
+                    st.image(qr_bytes, caption=f"Escanear para Recepción/Entrega de {m.get('nombre')}", width=200)
+                    st.code(url_qr, language=None)
+                    st.download_button(
+                        "⬇️ Descargar QR (PNG)",
+                        data=qr_bytes,
+                        file_name=f"QR_{m.get('codigo')}.png",
+                        mime="image/png",
+                        key=f"dl_qr_{m.get('id')}"
+                    )
