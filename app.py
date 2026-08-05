@@ -2,7 +2,8 @@ import streamlit as st
 # Esta es la ruta corregida sin el ".connection" intermedio
 from database.conection import (
     get_maquinas, get_fallas, get_checklists, get_terceros, get_ots, get_repuestos,
-    get_tecnicos, get_planes, get_documentos, get_ot_repuestos
+    get_tecnicos, get_planes, get_documentos, get_ot_repuestos,
+    login_usuario, logout_usuario, get_usuario_by_id
 )
 from views.dashboard import render_dashboard
 from views.maquinas import render_maquinas
@@ -14,7 +15,10 @@ from views.repuestos import render_repuestos
 from views.tecnicos import render_tecnicos
 from views.planes import render_planes
 from views.reportes import render_reportes
-from datetime import datetime, timedelta
+from views.asistente import render_asistente
+from views.usuarios import render_usuarios
+from views.mis_ots import render_mis_ots
+from datetime import datetime
 
 # Configuración de página
 st.set_page_config(
@@ -54,6 +58,39 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
+
+# ============================================================
+# LOGIN (Supabase Auth) — nada de lo de abajo corre sin sesión
+# ============================================================
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = None
+
+if not st.session_state.usuario_actual:
+    st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 20px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO</div>", unsafe_allow_html=True)
+    st.subheader("Iniciar Sesión")
+
+    with st.form("form_login"):
+        email = st.text_input("Email")
+        password = st.text_input("Contraseña", type="password")
+        submit = st.form_submit_button("Ingresar")
+
+        if submit:
+            try:
+                resultado = login_usuario(email, password)
+                user_id = resultado.user.id
+                perfil = get_usuario_by_id(user_id)
+                if not perfil:
+                    st.error("Tu cuenta existe pero todavía no tiene un rol asignado. Pedile al administrador que te cargue en '🔐 Usuarios'.")
+                else:
+                    st.session_state.usuario_actual = perfil
+                    st.rerun()
+            except Exception as e:
+                st.error(f"❌ No se pudo iniciar sesión. Verificá tu email y contraseña. Detalle: {e}")
+
+    st.stop()
+
+usuario = st.session_state.usuario_actual
+rol = usuario.get("rol", "tecnico")
 
 # Inicializar Estados de Sesión en Memoria (Sincronizados con Supabase)
 if "maquinas" not in st.session_state:
@@ -98,6 +135,13 @@ def _dias_plan(fecha_str):
 
 planes_vencidos = len([p for p in st.session_state.planes if _dias_plan(p.get("proxima_ejecucion")) is not None and _dias_plan(p.get("proxima_ejecucion")) <= 7])
 
+mis_ots_pendientes = 0
+if rol == "tecnico" and usuario.get("tecnico_id"):
+    mis_ots_pendientes = len([
+        o for o in st.session_state.ots
+        if o.get("tecnico_id") == usuario.get("tecnico_id") and o.get("estado") != "Completada"
+    ])
+
 # --- LECTURA DE QR: si la URL trae ?maquina_id=X&vista=checklist, saltar directo ---
 query_params = st.query_params
 if "maquina_id" in query_params:
@@ -105,23 +149,45 @@ if "maquina_id" in query_params:
     if query_params.get("vista") == "checklist":
         st.session_state["forzar_vista"] = "Recepción / Entrega"
 
-# Sidebar de Navegación Nativa
+# ============================================================
+# SIDEBAR: identidad del usuario + menú según su rol
+# ============================================================
 with st.sidebar:
     st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 14px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO by Javier Galeano</div>", unsafe_allow_html=True)
-    st.markdown("<div style='color: #5A6570; font-family: monospace; font-size: 10px; margin-bottom: 20px;'>MVP · v0.1 (Python)</div>", unsafe_allow_html=True)
-    
-    # Textos corregidos y limpios para el menú
+    st.markdown("<div style='color: #5A6570; font-family: monospace; font-size: 10px; margin-bottom: 4px;'>MVP · v0.2 (Python)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color: #E5E9EC; font-size: 13px; margin-bottom: 16px;'>👤 {usuario.get('nombre')} · <span style='color:#38BDF8;'>{rol.upper()}</span></div>", unsafe_allow_html=True)
+
+    if st.button("🚪 Cerrar Sesión"):
+        logout_usuario()
+        st.session_state.usuario_actual = None
+        st.rerun()
+
+    st.markdown("---")
+
+    # Textos con badges para el menú
     lbl_fallas = f"🚨 Fallas / RCA ({fallas_abiertas})" if fallas_abiertas > 0 else "📋 Fallas / RCA"
     lbl_terceros = f"🚚 Terceros ({venc_proximos})" if venc_proximos > 0 else "📦 Terceros"
     lbl_repuestos = f"🚨 Repuestos / Stock ({criticos_stock})" if criticos_stock > 0 else "🔩 Repuestos / Stock"
     lbl_planes = f"🚨 Plan Preventivo ({planes_vencidos})" if planes_vencidos > 0 else "🗓️ Plan Preventivo"
+    lbl_mis_ots = f"🚨 Mis OTs ({mis_ots_pendientes})" if mis_ots_pendientes > 0 else "👷 Mis OTs"
 
-    opciones_menu = ["Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos, lbl_fallas,
-                     "Recepción / Entrega", lbl_terceros, lbl_planes, "👷 Técnicos", "📑 Reportes"]
+    # Menú distinto según el rol del usuario logueado
+    if rol == "admin":
+        opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos,
+                          lbl_fallas, "Recepción / Entrega", lbl_terceros, lbl_planes, "👷 Técnicos",
+                          "📑 Reportes", "🔐 Usuarios"]
+    elif rol == "gerente":
+        opciones_menu = ["Panel General", "📑 Reportes"]
+    else:  # tecnico
+        opciones_menu = ["🧭 Asistente del Día", lbl_mis_ots, "Recepción / Entrega"]
 
     indice_default = 0
-    if st.session_state.get("forzar_vista") == "Recepción / Entrega":
-        indice_default = opciones_menu.index("Recepción / Entrega")
+    forzar_vista = st.session_state.get("forzar_vista")
+    if forzar_vista:
+        for i, op in enumerate(opciones_menu):
+            if forzar_vista in op or op in forzar_vista:
+                indice_default = i
+                break
 
     opcion = st.radio(
         "Menú de Navegación",
@@ -130,8 +196,14 @@ with st.sidebar:
         label_visibility="collapsed"
     )
 
-# Enrutamiento de Módulos (Views)
-if "Panel General" in opcion:
+# ============================================================
+# Enrutamiento de Módulos (Views) — respeta el rol
+# ============================================================
+if "Asistente" in opcion:
+    render_asistente()
+elif "Mis OTs" in opcion:
+    render_mis_ots(usuario)
+elif "Panel General" in opcion:
     render_dashboard()
 elif "Máquinas" in opcion:
     render_maquinas()
@@ -151,3 +223,5 @@ elif "Técnicos" in opcion:
     render_tecnicos()
 elif "Reportes" in opcion:
     render_reportes()
+elif "Usuarios" in opcion:
+    render_usuarios()
