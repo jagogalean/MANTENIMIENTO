@@ -4,6 +4,86 @@ from io import BytesIO
 from datetime import datetime
 from views.dashboard import calcular_kpis_industriales
 
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+
+def generar_pdf_maquinas(maquinas, nombre_empresa="", logo_bytes=None):
+    """Genera un PDF con membrete (logo + nombre de empresa) y el listado de
+    máquinas ordenado por criticidad, para el informe de gerencia."""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    story = []
+
+    if logo_bytes:
+        try:
+            logo_buf = BytesIO(logo_bytes)
+            img = Image(logo_buf, width=3 * cm, height=3 * cm)
+            img.hAlign = "LEFT"
+            story.append(img)
+            story.append(Spacer(1, 8))
+        except Exception:
+            pass
+
+    titulo_style = ParagraphStyle("TituloEmpresa", parent=styles["Title"], fontSize=16, spaceAfter=2)
+    subtitulo_style = ParagraphStyle("Subtitulo", parent=styles["Normal"], fontSize=9, textColor=colors.grey)
+
+    if nombre_empresa:
+        story.append(Paragraph(nombre_empresa, titulo_style))
+    story.append(Paragraph("Listado de Máquinas y Criticidad", styles["Heading2"]))
+    story.append(Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}", subtitulo_style))
+    story.append(Spacer(1, 16))
+
+    # Ordenar por criticidad: A (crítica) primero
+    orden_crit = {"A": 0, "B": 1, "C": 2}
+    maquinas_ordenadas = sorted(maquinas, key=lambda m: orden_crit.get(m.get("criticidad"), 3))
+
+    crit_texto = {"A": "Crítica (A)", "B": "Importante (B)", "C": "Menor (C)"}
+    data = [["Máquina", "Código", "Sección", "Criticidad"]]
+    for m in maquinas_ordenadas:
+        data.append([
+            m.get("nombre", "—"),
+            m.get("codigo", "—"),
+            m.get("seccion") or "—",
+            crit_texto.get(m.get("criticidad"), m.get("criticidad", "—"))
+        ])
+
+    tabla = Table(data, colWidths=[5.5 * cm, 3 * cm, 4 * cm, 3.5 * cm], repeatRows=1)
+    estilo = TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#12171B")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CCCCCC")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6F8")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ])
+    for i, m in enumerate(maquinas_ordenadas, start=1):
+        if m.get("criticidad") == "A":
+            estilo.add("TEXTCOLOR", (3, i), (3, i), colors.HexColor("#B91C1C"))
+            estilo.add("FONTNAME", (3, i), (3, i), "Helvetica-Bold")
+    tabla.setStyle(estilo)
+    story.append(tabla)
+
+    story.append(Spacer(1, 20))
+    resumen = (
+        f"Total de máquinas: {len(maquinas)}  ·  "
+        f"Críticas (A): {len([m for m in maquinas if m.get('criticidad') == 'A'])}  ·  "
+        f"Importantes (B): {len([m for m in maquinas if m.get('criticidad') == 'B'])}  ·  "
+        f"Menores (C): {len([m for m in maquinas if m.get('criticidad') == 'C'])}"
+    )
+    story.append(Paragraph(resumen, styles["Normal"]))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 
 def _construir_costos_por_maquina(ots, maquinas, ot_repuestos, repuestos):
     """Costo total (mano de obra + repuestos consumidos) agrupado por máquina."""
@@ -130,3 +210,25 @@ def render_reportes():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         st.success("✅ Reporte generado. Hacé clic en el botón de descarga.")
+
+    st.markdown("---")
+    st.markdown("##### 📄 Listado de Máquinas y Criticidad (PDF con membrete)")
+    st.caption("Ideal para el primer informe a gerencia — convence más que una tabla en pantalla.")
+
+    nombre_empresa = st.text_input(
+        "Nombre de la empresa (aparece en el membrete)",
+        value=st.session_state.get("nombre_empresa_pdf", "")
+    )
+    logo_file = st.file_uploader("Logo de la empresa (opcional, PNG o JPG)", type=["png", "jpg", "jpeg"])
+
+    if st.button("📥 Generar PDF de Máquinas"):
+        st.session_state["nombre_empresa_pdf"] = nombre_empresa
+        logo_bytes = logo_file.read() if logo_file else None
+        pdf_buffer = generar_pdf_maquinas(maquinas, nombre_empresa, logo_bytes)
+        st.download_button(
+            label="⬇️ Descargar Listado_Maquinas.pdf",
+            data=pdf_buffer,
+            file_name=f"Listado_Maquinas_{datetime.now().strftime('%Y%m%d')}.pdf",
+            mime="application/pdf"
+        )
+        st.success("✅ PDF generado.")
