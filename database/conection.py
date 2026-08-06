@@ -104,6 +104,33 @@ def get_ot_repuestos():
     response = supabase.table("ot_repuestos").select("*").execute()
     return response.data
 
+# ----------------- AUTENTICACIÓN Y USUARIOS (roles) -----------------
+def login_usuario(email: str, password: str):
+    return supabase.auth.sign_in_with_password({"email": email, "password": password})
+
+def logout_usuario():
+    supabase.auth.sign_out()
+
+def get_usuario_by_id(user_id: str):
+    response = supabase.table("usuarios").select("*").eq("id", user_id).execute()
+    return response.data[0] if response.data else None
+
+def get_usuarios():
+    response = supabase.table("usuarios").select("*").execute()
+    return response.data
+
+def insert_usuario(data: dict):
+    response = supabase.table("usuarios").insert(data).execute()
+    return response.data
+
+def update_usuario(user_id: str, patch: dict):
+    response = supabase.table("usuarios").update(patch).eq("id", user_id).execute()
+    return response.data
+
+def delete_usuario(user_id: str):
+    response = supabase.table("usuarios").delete().eq("id", user_id).execute()
+    return response.data
+
 # ----------------- CRUD TÉCNICOS -----------------
 def get_tecnicos():
     response = supabase.table("tecnicos").select("*").order("id", desc=True).execute()
