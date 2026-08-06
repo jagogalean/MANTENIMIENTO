@@ -3,7 +3,7 @@ import streamlit as st
 from database.conection import (
     get_maquinas, get_fallas, get_checklists, get_terceros, get_ots, get_repuestos,
     get_tecnicos, get_planes, get_documentos, get_ot_repuestos,
-    login_usuario, logout_usuario, get_usuario_by_id
+    login_usuario, logout_usuario, get_usuario_by_id, get_configuracion_empresa
 )
 from views.dashboard import render_dashboard
 from views.maquinas import render_maquinas
@@ -18,6 +18,7 @@ from views.reportes import render_reportes
 from views.asistente import render_asistente
 from views.usuarios import render_usuarios
 from views.mis_ots import render_mis_ots
+from views.calendario import render_calendario
 from datetime import datetime
 
 # Configuración de página
@@ -113,6 +114,8 @@ if "documentos" not in st.session_state:
     st.session_state.documentos = get_documentos()
 if "ot_repuestos" not in st.session_state:
     st.session_state.ot_repuestos = get_ot_repuestos()
+if "config_empresa" not in st.session_state:
+    st.session_state.config_empresa = get_configuracion_empresa() or {}
 
 # Helpers de cálculo de alertas para Badges de Navegación
 def days_until(date_str):
@@ -174,8 +177,8 @@ with st.sidebar:
     # Menú distinto según el rol del usuario logueado
     if rol == "admin":
         opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos,
-                          lbl_fallas, "Recepción / Entrega", lbl_terceros, lbl_planes, "👷 Técnicos",
-                          "📑 Reportes", "🔐 Usuarios"]
+                          lbl_fallas, "Recepción / Entrega", lbl_terceros, lbl_planes, "📅 Calendario Preventivo",
+                          "👷 Técnicos", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
         opciones_menu = ["Panel General", "📑 Reportes"]
     else:  # tecnico
@@ -219,6 +222,8 @@ elif "Terceros" in opcion:
     render_terceros()
 elif "Plan Preventivo" in opcion:
     render_planes()
+elif "Calendario Preventivo" in opcion:
+    render_calendario()
 elif "Técnicos" in opcion:
     render_tecnicos()
 elif "Reportes" in opcion:
