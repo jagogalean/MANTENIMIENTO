@@ -1,7 +1,10 @@
 import streamlit as st
 import qrcode
+import json
+import pdfplumber
 from io import BytesIO
-from database.conection import insert_maquina, delete_maquina, get_maquinas, insert_documento, delete_documento, get_documentos
+from database.conection import insert_maquina, delete_maquina, get_maquinas, insert_documento, delete_documento, get_documentos, insert_plan, get_planes
+from datetime import datetime, timedelta
 
 CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
 
@@ -14,6 +17,56 @@ def generar_qr_png(url: str) -> bytes:
     buf = BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def extraer_texto_pdf(archivo_pdf) -> str:
+    texto = []
+    with pdfplumber.open(archivo_pdf) as pdf:
+        for pagina in pdf.pages[:40]:  # límite de 40 páginas para no exceder el contexto de la IA
+            texto.append(pagina.extract_text() or "")
+    return "\n".join(texto)
+
+
+def generar_plan_con_ia(texto_manual: str, api_key: str):
+    """Devuelve (lista_de_tareas, error). lista_de_tareas es [{'tarea':..,'frecuencia_dias':..}, ...]"""
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        return None, "Falta instalar 'google-generativeai'. Agregalo a requirements.txt."
+
+    if not api_key:
+        return None, "Falta la API Key de Gemini."
+
+    genai.configure(api_key=api_key)
+    modelo = genai.GenerativeModel("gemini-2.0-flash")
+
+    prompt = f"""Sos un ingeniero de mantenimiento industrial. Te paso el texto extraído de un
+manual técnico de una máquina. Identificá las tareas de mantenimiento preventivo
+recomendadas por el fabricante y su frecuencia recomendada, convertida a DÍAS
+(si el manual dice "cada 500 horas" y no hay dato de uso diario, estimá una
+frecuencia en días razonable para uso industrial estándar, y decilo en el
+campo 'nota').
+
+Respondé ÚNICAMENTE con JSON válido, sin texto adicional ni backticks, con esta forma exacta:
+{{"tareas": [{{"tarea": "string", "frecuencia_dias": number, "nota": "string opcional"}}]}}
+
+Si no encontrás información clara de mantenimiento preventivo en el texto, devolvé {{"tareas": []}}.
+
+Texto del manual (puede estar incompleto o truncado):
+---
+{texto_manual[:15000]}
+---
+"""
+    try:
+        respuesta = modelo.generate_content(prompt)
+        texto_resp = respuesta.text.strip()
+        texto_resp = texto_resp.replace("```json", "").replace("```", "").strip()
+        data = json.loads(texto_resp)
+        return data.get("tareas", []), None
+    except json.JSONDecodeError:
+        return None, "La IA no devolvió un JSON válido. Probá de nuevo o con un manual más corto."
+    except Exception as e:
+        return None, f"No se pudo generar el plan: {e}"
 
 def render_maquinas():
     st.title("Máquinas")
@@ -123,3 +176,72 @@ def render_maquinas():
                         mime="image/png",
                         key=f"dl_qr_{m.get('id')}"
                     )
+
+            # --- GENERAR PLAN PREVENTIVO CON IA A PARTIR DEL MANUAL ---
+            with st.expander("🤖 Generar Plan Preventivo con IA (desde el manual)"):
+                api_key_secret = st.secrets.get("GEMINI_API_KEY", "")
+                if api_key_secret:
+                    api_key_usar = api_key_secret
+                    st.caption("Usando la GEMINI_API_KEY configurada en los secrets de la app.")
+                else:
+                    api_key_usar = st.text_input(
+                        "Pegá tu API Key de Gemini (solo para esta sesión, no se guarda)",
+                        type="password",
+                        key=f"api_key_{m.get('id')}",
+                        help="Se recomienda configurarla en Streamlit Cloud > Settings > Secrets como GEMINI_API_KEY en vez de pegarla acá cada vez."
+                    )
+
+                manual_pdf = st.file_uploader(
+                    "Subí el manual del fabricante (PDF)", type=["pdf"], key=f"manual_pdf_{m.get('id')}"
+                )
+
+                if st.button("🔍 Analizar manual y sugerir plan", key=f"analizar_{m.get('id')}"):
+                    if not manual_pdf:
+                        st.error("❌ Subí un PDF primero.")
+                    elif not api_key_usar:
+                        st.error("❌ Falta la API Key de Gemini.")
+                    else:
+                        with st.spinner("Leyendo el manual y consultando la IA..."):
+                            texto_manual = extraer_texto_pdf(manual_pdf)
+                            if not texto_manual.strip():
+                                st.error("❌ No se pudo extraer texto del PDF (¿es un escaneo sin OCR?).")
+                            else:
+                                tareas_sugeridas, error = generar_plan_con_ia(texto_manual, api_key_usar)
+                                if error:
+                                    st.error(f"❌ {error}")
+                                elif not tareas_sugeridas:
+                                    st.warning("La IA no encontró tareas de mantenimiento preventivo claras en este manual.")
+                                else:
+                                    st.session_state[f"tareas_ia_{m.get('id')}"] = tareas_sugeridas
+
+                tareas_ia = st.session_state.get(f"tareas_ia_{m.get('id')}")
+                if tareas_ia:
+                    st.write("**Tareas sugeridas — revisá y ajustá antes de cargarlas:**")
+                    tareas_editadas = st.data_editor(
+                        tareas_ia,
+                        column_config={
+                            "tarea": "Tarea",
+                            "frecuencia_dias": st.column_config.NumberColumn("Frecuencia (días)", min_value=1, step=1),
+                            "nota": "Nota de la IA"
+                        },
+                        num_rows="dynamic",
+                        key=f"editor_ia_{m.get('id')}",
+                        use_container_width=True
+                    )
+                    if st.button("✅ Cargar estas tareas al Plan Preventivo", key=f"cargar_ia_{m.get('id')}"):
+                        hoy = datetime.now().date()
+                        for t in tareas_editadas:
+                            if not t.get("tarea") or not t.get("frecuencia_dias"):
+                                continue
+                            proxima = hoy + timedelta(days=int(t["frecuencia_dias"]))
+                            insert_plan({
+                                "maquina_id": m.get("id"),
+                                "tarea": t["tarea"],
+                                "frecuencia_dias": int(t["frecuencia_dias"]),
+                                "ultima_ejecucion": None,
+                                "proxima_ejecucion": proxima.strftime("%Y-%m-%d")
+                            })
+                        st.session_state.planes = get_planes()
+                        del st.session_state[f"tareas_ia_{m.get('id')}"]
+                        st.success(f"✅ {len(tareas_editadas)} tarea(s) cargada(s) al Plan Preventivo de {m.get('nombre')}.")
+                        st.rerun()
