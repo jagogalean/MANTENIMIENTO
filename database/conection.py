@@ -173,3 +173,13 @@ def insert_documento(data: dict):
 def delete_documento(documento_id: str):
     response = supabase.table("documentos_maquina").delete().eq("id", documento_id).execute()
     return response.data
+
+# ----------------- CONFIGURACIÓN DE EMPRESA (logo/nombre persistentes) -----------------
+def get_configuracion_empresa():
+    response = supabase.table("configuracion_empresa").select("*").eq("id", 1).execute()
+    return response.data[0] if response.data else None
+
+def guardar_configuracion_empresa(nombre_empresa: str, logo_base64: str):
+    payload = {"id": 1, "nombre_empresa": nombre_empresa, "logo_base64": logo_base64}
+    response = supabase.table("configuracion_empresa").upsert(payload).execute()
+    return response.data
