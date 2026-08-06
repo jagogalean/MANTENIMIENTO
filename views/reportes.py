@@ -1,14 +1,18 @@
 import streamlit as st
 import pandas as pd
+import base64
 from io import BytesIO
 from datetime import datetime
 from views.dashboard import calcular_kpis_industriales
+from database.conection import guardar_configuracion_empresa
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Font
 
 
 def generar_pdf_maquinas(maquinas, nombre_empresa="", logo_bytes=None):
@@ -128,6 +132,29 @@ def render_reportes():
 
     kpis = calcular_kpis_industriales(maquinas, fallas, ots)
 
+    st.markdown("##### 🖼️ Membrete de la empresa")
+    st.caption("Se guarda una sola vez en la base de datos — no hace falta volver a subir el logo cada vez.")
+
+    config_actual = st.session_state.get("config_empresa", {}) or {}
+    nombre_empresa = st.text_input(
+        "Nombre de la empresa",
+        value=config_actual.get("nombre_empresa", "") or ""
+    )
+    logo_file = st.file_uploader("Logo de la empresa (PNG o JPG) — subilo solo si querés cambiarlo", type=["png", "jpg", "jpeg"])
+
+    if st.button("💾 Guardar Membrete"):
+        if logo_file:
+            logo_base64_nuevo = base64.b64encode(logo_file.read()).decode("utf-8")
+        else:
+            logo_base64_nuevo = config_actual.get("logo_base64", "")
+        guardar_configuracion_empresa(nombre_empresa, logo_base64_nuevo)
+        st.session_state.config_empresa = {"nombre_empresa": nombre_empresa, "logo_base64": logo_base64_nuevo}
+        st.success("✅ Membrete guardado. Ya no hace falta volver a cargarlo.")
+        st.rerun()
+
+    logo_bytes = base64.b64decode(config_actual["logo_base64"]) if config_actual.get("logo_base64") else None
+
+    st.markdown("---")
     st.markdown("##### Vista previa del resumen ejecutivo")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Disponibilidad", f"{kpis['disponibilidad']}%")
@@ -139,7 +166,7 @@ def render_reportes():
         buffer = BytesIO()
 
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            # Hoja 1: Resumen ejecutivo
+            # Hoja 1: Resumen ejecutivo (con membrete: logo + nombre de empresa arriba)
             resumen = pd.DataFrame([{
                 "Fecha del Reporte": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "Máquinas Registradas": len(maquinas),
@@ -150,7 +177,23 @@ def render_reportes():
                 "Fallas Abiertas": len([f for f in fallas if f.get("estado") != "Cerrada"]),
                 "Repuestos Críticos": len([r for r in repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)])
             }])
-            resumen.to_excel(writer, sheet_name="Resumen Ejecutivo", index=False)
+            fila_inicio = 5 if (nombre_empresa or logo_bytes) else 0
+            resumen.to_excel(writer, sheet_name="Resumen Ejecutivo", index=False, startrow=fila_inicio)
+
+            ws_resumen = writer.sheets["Resumen Ejecutivo"]
+            if nombre_empresa or logo_bytes:
+                if nombre_empresa:
+                    ws_resumen["C1"] = nombre_empresa
+                    ws_resumen["C1"].font = Font(size=16, bold=True)
+                ws_resumen["C2"] = "Reporte de Mantenimiento"
+                ws_resumen["C2"].font = Font(size=12, bold=True)
+                ws_resumen["C3"] = f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                if logo_bytes:
+                    img_buf = BytesIO(logo_bytes)
+                    xl_img = XLImage(img_buf)
+                    xl_img.width = 70
+                    xl_img.height = 70
+                    ws_resumen.add_image(xl_img, "A1")
 
             # Hoja 2: Backlog de OTs pendientes
             map_maquina = {m["id"]: m["nombre"] for m in maquinas}
@@ -213,17 +256,9 @@ def render_reportes():
 
     st.markdown("---")
     st.markdown("##### 📄 Listado de Máquinas y Criticidad (PDF con membrete)")
-    st.caption("Ideal para el primer informe a gerencia — convence más que una tabla en pantalla.")
-
-    nombre_empresa = st.text_input(
-        "Nombre de la empresa (aparece en el membrete)",
-        value=st.session_state.get("nombre_empresa_pdf", "")
-    )
-    logo_file = st.file_uploader("Logo de la empresa (opcional, PNG o JPG)", type=["png", "jpg", "jpeg"])
+    st.caption("Ideal para el primer informe a gerencia — usa el mismo nombre y logo que cargaste arriba.")
 
     if st.button("📥 Generar PDF de Máquinas"):
-        st.session_state["nombre_empresa_pdf"] = nombre_empresa
-        logo_bytes = logo_file.read() if logo_file else None
         pdf_buffer = generar_pdf_maquinas(maquinas, nombre_empresa, logo_bytes)
         st.download_button(
             label="⬇️ Descargar Listado_Maquinas.pdf",
