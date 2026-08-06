@@ -4,3 +4,5 @@ qrcode[pil]
 pandas
 openpyxl
 reportlab
+pdfplumber
+google-generativeai
