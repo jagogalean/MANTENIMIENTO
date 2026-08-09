@@ -5,11 +5,6 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime, date, timedelta
 
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment
-from openpyxl.utils import get_column_letter
-from openpyxl.drawing.image import Image as XLImage
-
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
          "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 DIAS_SEMANA_ABR = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
@@ -145,6 +140,10 @@ def mostrar_vista_previa_mes(tareas, map_maquina_nombre, anio, mes):
 # GENERACIÓN DE EXCEL (una hoja por mes, o las 12 juntas)
 # ---------------------------------------------------------------
 def _escribir_hoja_mes(ws, tareas, map_maquina_nombre, anio, mes, nombre_empresa, logo_bytes, titulo_maquina):
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    from openpyxl.drawing.image import Image as XLImage
+
     ultimo_dia = calendar.monthrange(anio, mes)[1]
     col_actividad, col_maquina, col_actividades_lista, col_frecuencia, primera_col_dia = 1, 2, 3, 4, 5
     ultima_col_dia = primera_col_dia + ultimo_dia - 1
@@ -241,6 +240,7 @@ def _escribir_hoja_mes(ws, tareas, map_maquina_nombre, anio, mes, nombre_empresa
 
 
 def generar_excel_calendario_mes(tareas, map_maquina_nombre, anio, mes, nombre_empresa, logo_bytes, titulo_maquina):
+    import openpyxl
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = MESES[mes - 1][:28]
@@ -252,6 +252,7 @@ def generar_excel_calendario_mes(tareas, map_maquina_nombre, anio, mes, nombre_e
 
 
 def generar_excel_calendario_anual(tareas, map_maquina_nombre, anio, nombre_empresa, logo_bytes, titulo_maquina):
+    import openpyxl
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for mes in range(1, 13):
