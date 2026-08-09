@@ -1,232 +1,360 @@
 import streamlit as st
-# Esta es la ruta corregida sin el ".connection" intermedio
-from database.conection import (
-    get_maquinas, get_fallas, get_checklists, get_terceros, get_ots, get_repuestos,
-    get_tecnicos, get_planes, get_documentos, get_ot_repuestos,
-    login_usuario, logout_usuario, get_usuario_by_id, get_configuracion_empresa
-)
-from views.dashboard import render_dashboard
-from views.maquinas import render_maquinas
-from views.fallas import render_fallas
-from views.checklists import render_checklists
-from views.terceros import render_terceros
-from views.ots import render_ots
-from views.repuestos import render_repuestos
-from views.tecnicos import render_tecnicos
-from views.planes import render_planes
-from views.reportes import render_reportes
-from views.asistente import render_asistente
-from views.usuarios import render_usuarios
-from views.mis_ots import render_mis_ots
-from views.calendario import render_calendario
+import pandas as pd
+import base64
+import pymupdf
+from io import BytesIO
 from datetime import datetime
+from views.dashboard import calcular_kpis_industriales
+from database.conection import guardar_configuracion_empresa
 
-# Configuración de página
-st.set_page_config(
-    page_title="CMMS Industrial MVP",
-    page_icon="⚙️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Font
 
-# Estética Industrial Oscura Personalizada
-st.markdown("""
-    <style>
-        /* Estilos base fondo y contenedores */
-        .stApp { background-color: #12171B; color: #E5E9EC; }
-        [data-testid="stSidebar"] { background-color: #0E1216; border-right: 1px solid #22282E; }
-        
-        /* Contenedores tipo Panel del MVP */
-        .industrial-panel {
-            background-color: #1B2127;
-            border: 1px solid #2A323A;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 12px;
-        }
-        
-        /* CORRECCIÓN: Forzar texto claro y legible en el menú de la barra lateral */
-        [data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
-            color: #E5E9EC !important;
-            font-size: 14px !important;
-            }
-        
-        /* Modificación de Inputs globales de Streamlit para acoplar al tema */
-        .stTextInput>div>div>input, .stSelectbox>div>div>div, .stTextArea>div>div>textarea {
-            background-color: #12171B !important;
-            border: 1px solid #2A323A !important;
-            color: #E5E9EC !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
 
-# ============================================================
-# LOGIN (Supabase Auth) — nada de lo de abajo corre sin sesión
-# ============================================================
-if "usuario_actual" not in st.session_state:
-    st.session_state.usuario_actual = None
+def generar_pdf_maquinas(maquinas, nombre_empresa="", logo_bytes=None):
+    """Genera un PDF con membrete (logo + nombre de empresa) y el listado de
+    máquinas ordenado por criticidad, para el informe de gerencia."""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    story = []
 
-if not st.session_state.usuario_actual:
-    st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 20px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO</div>", unsafe_allow_html=True)
-    st.subheader("Iniciar Sesión")
+    if logo_bytes:
+        try:
+            logo_buf = BytesIO(logo_bytes)
+            img = Image(logo_buf, width=3 * cm, height=3 * cm)
+            img.hAlign = "LEFT"
+            story.append(img)
+            story.append(Spacer(1, 8))
+        except Exception:
+            pass
 
-    with st.form("form_login"):
-        email = st.text_input("Email")
-        password = st.text_input("Contraseña", type="password")
-        submit = st.form_submit_button("Ingresar")
+    titulo_style = ParagraphStyle("TituloEmpresa", parent=styles["Title"], fontSize=16, spaceAfter=2)
+    subtitulo_style = ParagraphStyle("Subtitulo", parent=styles["Normal"], fontSize=9, textColor=colors.grey)
 
-        if submit:
-            try:
-                resultado = login_usuario(email, password)
-                user_id = resultado.user.id
-                perfil = get_usuario_by_id(user_id)
-                if not perfil:
-                    st.error("Tu cuenta existe pero todavía no tiene un rol asignado. Pedile al administrador que te cargue en '🔐 Usuarios'.")
-                else:
-                    st.session_state.usuario_actual = perfil
-                    st.rerun()
-            except Exception as e:
-                st.error(f"❌ No se pudo iniciar sesión. Verificá tu email y contraseña. Detalle: {e}")
+    if nombre_empresa:
+        story.append(Paragraph(nombre_empresa, titulo_style))
+    story.append(Paragraph("Listado de Máquinas y Criticidad", styles["Heading2"]))
+    story.append(Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}", subtitulo_style))
+    story.append(Spacer(1, 16))
 
-    st.stop()
+    orden_crit = {"A": 0, "B": 1, "C": 2}
+    maquinas_ordenadas = sorted(maquinas, key=lambda m: orden_crit.get(m.get("criticidad"), 3))
 
-usuario = st.session_state.usuario_actual
-rol = usuario.get("rol", "tecnico")
+    crit_texto = {"A": "Crítica (A)", "B": "Importante (B)", "C": "Menor (C)"}
+    data = [["Máquina", "Código", "Sección", "Criticidad"]]
+    for m in maquinas_ordenadas:
+        data.append([
+            m.get("nombre", "—"),
+            m.get("codigo", "—"),
+            m.get("seccion") or "—",
+            crit_texto.get(m.get("criticidad"), m.get("criticidad", "—"))
+        ])
 
-# Inicializar Estados de Sesión en Memoria (Sincronizados con Supabase)
-if "maquinas" not in st.session_state:
-    st.session_state.maquinas = get_maquinas()
-if "fallas" not in st.session_state:
-    st.session_state.fallas = get_fallas()
-if "checklists" not in st.session_state:
-    st.session_state.checklists = get_checklists()
-if "terceros" not in st.session_state:
-    st.session_state.terceros = get_terceros()
-if "ots" not in st.session_state:
-    st.session_state.ots = get_ots()
-if "repuestos" not in st.session_state:
-    st.session_state.repuestos = get_repuestos()
-if "tecnicos" not in st.session_state:
-    st.session_state.tecnicos = get_tecnicos()
-if "planes" not in st.session_state:
-    st.session_state.planes = get_planes()
-if "documentos" not in st.session_state:
-    st.session_state.documentos = get_documentos()
-if "ot_repuestos" not in st.session_state:
-    st.session_state.ot_repuestos = get_ot_repuestos()
-if "config_empresa" not in st.session_state:
-    st.session_state.config_empresa = get_configuracion_empresa() or {}
-
-# Helpers de cálculo de alertas para Badges de Navegación
-def days_until(date_str):
-    if not date_str: return None
-    try:
-        diff = datetime.strptime(date_str, "%Y-%m-%d").date() - datetime.date(datetime.now())
-        return diff.days
-    except:
-        return None
-
-fallas_abiertas = len([f for f in st.session_state.fallas if f.get("estado") != "Cerrada"])
-venc_proximos = len([t for t in st.session_state.terceros if days_until(t.get("proximoVencimiento")) is not None and days_until(t.get("proximoVencimiento")) <= 30])
-criticos_stock = len([r for r in st.session_state.repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)])
-
-def _dias_plan(fecha_str):
-    try:
-        return (datetime.strptime(fecha_str, "%Y-%m-%d").date() - datetime.now().date()).days
-    except (TypeError, ValueError):
-        return None
-
-planes_vencidos = len([p for p in st.session_state.planes if _dias_plan(p.get("proxima_ejecucion")) is not None and _dias_plan(p.get("proxima_ejecucion")) <= 7])
-
-mis_ots_pendientes = 0
-if rol == "tecnico" and usuario.get("tecnico_id"):
-    mis_ots_pendientes = len([
-        o for o in st.session_state.ots
-        if o.get("tecnico_id") == usuario.get("tecnico_id") and o.get("estado") != "Completada"
+    tabla = Table(data, colWidths=[5.5 * cm, 3 * cm, 4 * cm, 3.5 * cm], repeatRows=1)
+    estilo = TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#12171B")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CCCCCC")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6F8")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ])
+    for i, m in enumerate(maquinas_ordenadas, start=1):
+        if m.get("criticidad") == "A":
+            estilo.add("TEXTCOLOR", (3, i), (3, i), colors.HexColor("#B91C1C"))
+            estilo.add("FONTNAME", (3, i), (3, i), "Helvetica-Bold")
+    tabla.setStyle(estilo)
+    story.append(tabla)
 
-# --- LECTURA DE QR: si la URL trae ?maquina_id=X&vista=checklist, saltar directo ---
-query_params = st.query_params
-if "maquina_id" in query_params:
-    st.session_state["qr_maquina_id"] = query_params["maquina_id"]
-    if query_params.get("vista") == "checklist":
-        st.session_state["forzar_vista"] = "Recepción / Entrega"
+    story.append(Spacer(1, 20))
+    resumen_txt = (
+        f"Total de máquinas: {len(maquinas)}  ·  "
+        f"Críticas (A): {len([m for m in maquinas if m.get('criticidad') == 'A'])}  ·  "
+        f"Importantes (B): {len([m for m in maquinas if m.get('criticidad') == 'B'])}  ·  "
+        f"Menores (C): {len([m for m in maquinas if m.get('criticidad') == 'C'])}"
+    )
+    story.append(Paragraph(resumen_txt, styles["Normal"]))
 
-# ============================================================
-# SIDEBAR: identidad del usuario + menú según su rol
-# ============================================================
-with st.sidebar:
-    st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 14px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO by Javier Galeano</div>", unsafe_allow_html=True)
-    st.markdown("<div style='color: #5A6570; font-family: monospace; font-size: 10px; margin-bottom: 4px;'>MVP · v0.2 (Python)</div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='color: #E5E9EC; font-size: 13px; margin-bottom: 16px;'>👤 {usuario.get('nombre')} · <span style='color:#38BDF8;'>{rol.upper()}</span></div>", unsafe_allow_html=True)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
-    if st.button("🚪 Cerrar Sesión"):
-        logout_usuario()
-        st.session_state.usuario_actual = None
+
+def _construir_costos_por_maquina(ots, maquinas, ot_repuestos, repuestos):
+    """Costo total (mano de obra + repuestos consumidos) agrupado por máquina."""
+    map_maquina = {m["id"]: m["nombre"] for m in maquinas}
+    map_repuesto_costo = {r["id"]: r.get("costo_unitario", 0) for r in repuestos}
+
+    costo_repuestos_por_ot = {}
+    for orr in ot_repuestos:
+        ot_id = orr.get("ot_id")
+        costo = orr.get("cantidad_usada", 0) * map_repuesto_costo.get(orr.get("repuesto_id"), 0)
+        costo_repuestos_por_ot[ot_id] = costo_repuestos_por_ot.get(ot_id, 0) + costo
+
+    filas = {}
+    for o in ots:
+        m_nombre = map_maquina.get(o.get("maquina_id"), "Desconocida")
+        costo_mo = o.get("costo_mano_obra", 0) or 0
+        costo_rep = costo_repuestos_por_ot.get(o.get("id"), 0)
+        horas_paro = o.get("horas_paro", 0) or 0
+
+        if m_nombre not in filas:
+            filas[m_nombre] = {"Máquina": m_nombre, "OTs": 0, "Costo Mano de Obra": 0, "Costo Repuestos": 0, "Costo Total": 0, "Horas de Paro": 0}
+
+        filas[m_nombre]["OTs"] += 1
+        filas[m_nombre]["Costo Mano de Obra"] += costo_mo
+        filas[m_nombre]["Costo Repuestos"] += costo_rep
+        filas[m_nombre]["Costo Total"] += costo_mo + costo_rep
+        filas[m_nombre]["Horas de Paro"] += horas_paro
+
+    return sorted(filas.values(), key=lambda x: x["Costo Total"], reverse=True)
+
+
+def construir_hojas_reporte(maquinas, fallas, ots, repuestos, terceros, planes, kpis):
+    """Arma los dataframes de cada hoja, reusados tanto en la vista previa
+    en pantalla como al generar el Excel final."""
+    map_maquina = {m["id"]: m["nombre"] for m in maquinas}
+
+    resumen = pd.DataFrame([{
+        "Fecha del Reporte": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "Máquinas Registradas": len(maquinas),
+        "Disponibilidad (%)": kpis["disponibilidad"],
+        "MTTR (hrs)": kpis["mttr"],
+        "MTBF (hrs)": kpis["mtbf"],
+        "Horas de Paro Totales": kpis["horas_paro"],
+        "Fallas Abiertas": len([f for f in fallas if f.get("estado") != "Cerrada"]),
+        "Repuestos Críticos": len([r for r in repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)])
+    }])
+
+    backlog_rows = [{
+        "Código": o.get("codigo"),
+        "Máquina": map_maquina.get(o.get("maquina_id"), "Desconocida"),
+        "Tipo": o.get("tipo_mantenimiento"),
+        "Estado": o.get("estado"),
+        "Descripción": o.get("descripcion"),
+        "Horas de Paro": o.get("horas_paro")
+    } for o in ots if o.get("estado") != "Completada"]
+    backlog = pd.DataFrame(backlog_rows if backlog_rows else [{"Info": "Sin pendientes"}])
+
+    costos_rows = _construir_costos_por_maquina(ots, maquinas, st.session_state.get("ot_repuestos", []), repuestos)
+    costos = pd.DataFrame(costos_rows if costos_rows else [{"Info": "Sin datos de costos aún"}])
+
+    criticos_rows = [{
+        "Repuesto": r.get("nombre"),
+        "Código Interno": r.get("codigo_interno"),
+        "Stock Actual": r.get("stock_actual"),
+        "Stock Mínimo": r.get("stock_minimo")
+    } for r in repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)]
+    criticos = pd.DataFrame(criticos_rows if criticos_rows else [{"Info": "Sin repuestos críticos"}])
+
+    inventario_rows = [{
+        "Repuesto": r.get("nombre"),
+        "Código Interno": r.get("codigo_interno"),
+        "Stock Actual": r.get("stock_actual", 0),
+        "Stock Mínimo": r.get("stock_minimo", 0),
+        "Costo Unitario (Gs.)": r.get("costo_unitario", 0),
+        "Valor Total (Gs.)": (r.get("stock_actual", 0) or 0) * (r.get("costo_unitario", 0) or 0)
+    } for r in repuestos]
+    inventario = pd.DataFrame(inventario_rows if inventario_rows else [{"Info": "Sin repuestos cargados"}])
+
+    hoy = datetime.now().date()
+    actividades_por_plan = {}
+    for a in st.session_state.get("plan_actividades", []):
+        actividades_por_plan.setdefault(a.get("plan_id"), []).append(a.get("actividad"))
+
+    plan_rows = []
+    for p in planes:
+        try:
+            fecha_prox = datetime.strptime(p.get("proxima_ejecucion"), "%Y-%m-%d").date()
+            dias = (fecha_prox - hoy).days
+        except (TypeError, ValueError):
+            dias = None
+        plan_rows.append({
+            "Máquina": map_maquina.get(p.get("maquina_id"), "Desconocida"),
+            "Plan": p.get("nombre_plan"),
+            "Actividades": "; ".join(actividades_por_plan.get(p.get("id"), [])) or "—",
+            "Frecuencia (días)": p.get("frecuencia_dias"),
+            "Próxima Ejecución": p.get("proxima_ejecucion"),
+            "Días Restantes": dias
+        })
+    plan_df = pd.DataFrame(plan_rows if plan_rows else [{"Info": "Sin plan preventivo cargado"}])
+
+    venc_rows = [{
+        "Equipo": t.get("nombre"),
+        "Proveedor": t.get("contacto"),
+        "Próximo Vencimiento": t.get("proximoVencimiento")
+    } for t in terceros]
+    terceros_df = pd.DataFrame(venc_rows if venc_rows else [{"Info": "Sin terceros cargados"}])
+
+    return {
+        "Resumen Ejecutivo": resumen,
+        "Backlog OTs": backlog,
+        "Costos por Máquina": costos,
+        "Inventario Completo": inventario,
+        "Repuestos Críticos": criticos,
+        "Plan Preventivo": plan_df,
+        "Terceros": terceros_df
+    }
+
+
+def generar_excel_reporte(hojas: dict, nombre_empresa="", logo_bytes=None):
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for nombre_hoja, df in hojas.items():
+            fila_inicio = 5 if (nombre_hoja == "Resumen Ejecutivo" and (nombre_empresa or logo_bytes)) else 0
+            df.to_excel(writer, sheet_name=nombre_hoja, index=False, startrow=fila_inicio)
+
+            if nombre_hoja == "Resumen Ejecutivo" and (nombre_empresa or logo_bytes):
+                ws = writer.sheets[nombre_hoja]
+                if nombre_empresa:
+                    ws["C1"] = nombre_empresa
+                    ws["C1"].font = Font(size=16, bold=True)
+                ws["C2"] = "Reporte de Mantenimiento"
+                ws["C2"].font = Font(size=12, bold=True)
+                ws["C3"] = f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                if logo_bytes:
+                    img_buf = BytesIO(logo_bytes)
+                    xl_img = XLImage(img_buf)
+                    xl_img.width = 70
+                    xl_img.height = 70
+                    ws.add_image(xl_img, "A1")
+    buffer.seek(0)
+    return buffer
+
+
+def render_reportes():
+    st.title("📑 Reportes para Gerencia")
+    st.write("Mirá los datos acá mismo — descargalos solo si necesitás el archivo.")
+
+    maquinas = st.session_state.get("maquinas", [])
+    fallas = st.session_state.get("fallas", [])
+    ots = st.session_state.get("ots", [])
+    repuestos = st.session_state.get("repuestos", [])
+    terceros = st.session_state.get("terceros", [])
+    planes = st.session_state.get("planes", [])
+
+    kpis = calcular_kpis_industriales(maquinas, fallas, ots)
+
+    st.markdown("##### 🖼️ Membrete de la empresa")
+    st.caption("Se guarda una sola vez en la base de datos — no hace falta volver a subir el logo cada vez.")
+
+    config_actual = st.session_state.get("config_empresa", {}) or {}
+    nombre_empresa = st.text_input(
+        "Nombre de la empresa",
+        value=config_actual.get("nombre_empresa", "") or ""
+    )
+    logo_file = st.file_uploader("Logo de la empresa (PNG o JPG) — subilo solo si querés cambiarlo", type=["png", "jpg", "jpeg"])
+
+    if st.button("💾 Guardar Membrete"):
+        if logo_file:
+            logo_base64_nuevo = base64.b64encode(logo_file.read()).decode("utf-8")
+        else:
+            logo_base64_nuevo = config_actual.get("logo_base64", "")
+        guardar_configuracion_empresa(nombre_empresa, logo_base64_nuevo)
+        st.session_state.config_empresa = {"nombre_empresa": nombre_empresa, "logo_base64": logo_base64_nuevo}
+        st.success("✅ Membrete guardado. Ya no hace falta volver a cargarlo.")
         st.rerun()
 
+    logo_bytes = base64.b64decode(config_actual["logo_base64"]) if config_actual.get("logo_base64") else None
+
+    # --- VISTA PREVIA SIEMPRE VISIBLE, EN PESTAÑAS (sin necesidad de descargar) ---
     st.markdown("---")
+    st.markdown("##### 👁️ Vista previa del reporte")
 
-    # Textos con badges para el menú
-    lbl_fallas = f"🚨 Fallas / RCA ({fallas_abiertas})" if fallas_abiertas > 0 else "📋 Fallas / RCA"
-    lbl_terceros = f"🚚 Terceros ({venc_proximos})" if venc_proximos > 0 else "📦 Terceros"
-    lbl_repuestos = f"🚨 Repuestos / Stock ({criticos_stock})" if criticos_stock > 0 else "🔩 Repuestos / Stock"
-    lbl_planes = f"🚨 Plan Preventivo ({planes_vencidos})" if planes_vencidos > 0 else "🗓️ Plan Preventivo"
-    lbl_mis_ots = f"🚨 Mis OTs ({mis_ots_pendientes})" if mis_ots_pendientes > 0 else "👷 Mis OTs"
+    hojas = construir_hojas_reporte(maquinas, fallas, ots, repuestos, terceros, planes, kpis)
 
-    # Menú distinto según el rol del usuario logueado
-    if rol == "admin":
-        opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos,
-                          lbl_fallas, "Recepción / Entrega", lbl_terceros, lbl_planes, "📅 Calendario Preventivo",
-                          "👷 Técnicos", "📑 Reportes", "🔐 Usuarios"]
-    elif rol == "gerente":
-        opciones_menu = ["Panel General", "📑 Reportes"]
-    else:  # tecnico
-        opciones_menu = ["🧭 Asistente del Día", lbl_mis_ots, "Recepción / Entrega"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Disponibilidad", f"{kpis['disponibilidad']}%")
+    c2.metric("MTTR", f"{kpis['mttr']} hrs")
+    c3.metric("MTBF", f"{kpis['mtbf']} hrs")
+    c4.metric("Horas de Paro Totales", f"{kpis['horas_paro']} hrs")
 
-    indice_default = 0
-    forzar_vista = st.session_state.get("forzar_vista")
-    if forzar_vista:
-        for i, op in enumerate(opciones_menu):
-            if forzar_vista in op or op in forzar_vista:
-                indice_default = i
-                break
+    tabs = st.tabs(list(hojas.keys()))
+    for tab, (nombre_hoja, df) in zip(tabs, hojas.items()):
+        with tab:
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
-    opcion = st.radio(
-        "Menú de Navegación",
-        opciones_menu,
-        index=indice_default,
-        label_visibility="collapsed"
-    )
+    # --- GRÁFICOS ---
+    st.markdown("---")
+    st.markdown("##### 📊 Gráficos")
 
-# ============================================================
-# Enrutamiento de Módulos (Views) — respeta el rol
-# ============================================================
-if "Asistente" in opcion:
-    render_asistente()
-elif "Mis OTs" in opcion:
-    render_mis_ots(usuario)
-elif "Panel General" in opcion:
-    render_dashboard()
-elif "Máquinas" in opcion:
-    render_maquinas()
-elif "Órdenes de Trabajo" in opcion:
-    render_ots()
-elif "Repuestos" in opcion:
-    render_repuestos()
-elif "Fallas" in opcion:
-    render_fallas()
-elif "Recepción" in opcion:
-    render_checklists()
-elif "Terceros" in opcion:
-    render_terceros()
-elif "Plan Preventivo" in opcion:
-    render_planes()
-elif "Calendario Preventivo" in opcion:
-    render_calendario()
-elif "Técnicos" in opcion:
-    render_tecnicos()
-elif "Reportes" in opcion:
-    render_reportes()
-elif "Usuarios" in opcion:
-    render_usuarios()
+    col_g1, col_g2 = st.columns(2)
+
+    with col_g1:
+        st.markdown("**Costo total por máquina**")
+        df_costos = hojas["Costos por Máquina"]
+        if "Costo Total" in df_costos.columns and not df_costos.empty:
+            st.bar_chart(df_costos.set_index("Máquina")["Costo Total"])
+        else:
+            st.caption("Todavía no hay costos cargados en las OTs.")
+
+    with col_g2:
+        st.markdown("**OTs por estado**")
+        if ots:
+            conteo_estado = pd.Series([o.get("estado", "Sin estado") for o in ots]).value_counts()
+            st.bar_chart(conteo_estado)
+        else:
+            st.caption("Todavía no hay OTs cargadas.")
+
+    col_g3, col_g4 = st.columns(2)
+
+    with col_g3:
+        st.markdown("**Fallas por estado**")
+        if fallas:
+            conteo_fallas = pd.Series([f.get("estado", "Sin estado") for f in fallas]).value_counts()
+            st.bar_chart(conteo_fallas)
+        else:
+            st.caption("Todavía no hay fallas registradas.")
+
+    with col_g4:
+        st.markdown("**Stock actual vs. mínimo (repuestos críticos)**")
+        df_criticos_chart = hojas["Repuestos Críticos"]
+        if "Repuesto" in df_criticos_chart.columns and not df_criticos_chart.empty:
+            st.bar_chart(df_criticos_chart.set_index("Repuesto")[["Stock Actual", "Stock Mínimo"]])
+        else:
+            st.caption("No hay repuestos en nivel crítico ahora mismo. 🎉")
+
+    if st.button("📥 Generar y Descargar Excel"):
+        buffer = generar_excel_reporte(hojas, nombre_empresa, logo_bytes)
+        st.download_button(
+            label="⬇️ Descargar Reporte_Mantenimiento.xlsx",
+            data=buffer,
+            file_name=f"Reporte_Mantenimiento_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        st.success("✅ Excel listo para descargar.")
+
+    # --- LISTADO DE MÁQUINAS EN PDF: previsualizado inline, sin forzar descarga ---
+    st.markdown("---")
+    st.markdown("##### 📄 Listado de Máquinas y Criticidad (PDF con membrete)")
+    st.caption("Ideal para el primer informe a gerencia — usa el mismo nombre y logo que cargaste arriba.")
+
+    if st.button("👁️ Generar Vista Previa del PDF"):
+        pdf_buffer = generar_pdf_maquinas(maquinas, nombre_empresa, logo_bytes)
+        st.session_state["_pdf_preview_bytes"] = pdf_buffer.getvalue()
+
+    if st.session_state.get("_pdf_preview_bytes"):
+        # Chrome bloquea los iframes con PDF embebido como data:URI cuando la
+        # página ya está dentro de otro iframe (como pasa en Streamlit Cloud).
+        # Por eso mostramos cada página del PDF como imagen, no como iframe.
+        doc_pdf = pymupdf.open(stream=st.session_state["_pdf_preview_bytes"], filetype="pdf")
+        for i, pagina in enumerate(doc_pdf):
+            pix = pagina.get_pixmap(dpi=150)
+            st.image(pix.tobytes("png"), use_container_width=True, caption=f"Página {i + 1} de {len(doc_pdf)}")
+        doc_pdf.close()
+
+        st.download_button(
+            label="⬇️ Descargar Listado_Maquinas.pdf",
+            data=st.session_state["_pdf_preview_bytes"],
+            file_name=f"Listado_Maquinas_{datetime.now().strftime('%Y%m%d')}.pdf",
+            mime="application/pdf"
+        )
