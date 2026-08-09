@@ -31,7 +31,7 @@ def render_repuestos():
 
         with col2:
             stock_actual = st.number_input("Stock Inicial", min_value=0, step=1, value=0)
-            costo_unitario = st.number_input("Costo Unitario ($)", min_value=0.0, step=0.01, value=0.0)
+            costo_unitario = st.number_input("Costo Unitario (Gs.)", min_value=0, step=100, value=0)
 
         stock_minimo = st.number_input("Stock Mínimo (dispara alerta de crítico)", min_value=0, step=1, value=0)
 
@@ -48,7 +48,7 @@ def render_repuestos():
                     "codigo_interno": codigo_interno,
                     "stock_actual": int(stock_actual),
                     "stock_minimo": int(stock_minimo),
-                    "costo_unitario": float(costo_unitario)
+                    "costo_unitario": int(costo_unitario)
                 }
                 insert_repuesto(nuevo_repuesto)
                 st.session_state.repuestos = get_repuestos()
