@@ -1,247 +1,360 @@
 import streamlit as st
-import qrcode
-import json
-import pdfplumber
+import pandas as pd
+import base64
+import pymupdf
 from io import BytesIO
-from database.conection import insert_maquina, delete_maquina, get_maquinas, insert_documento, delete_documento, get_documentos, insert_plan, get_planes
-from datetime import datetime, timedelta
+from datetime import datetime
+from views.dashboard import calcular_kpis_industriales
+from database.conection import guardar_configuracion_empresa
 
-CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
-
-
-def generar_qr_png(url: str) -> bytes:
-    qr = qrcode.QRCode(box_size=10, border=2)
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Font
 
 
-def extraer_texto_pdf(archivo_pdf) -> str:
-    texto = []
-    with pdfplumber.open(archivo_pdf) as pdf:
-        for pagina in pdf.pages[:40]:  # límite de 40 páginas para no exceder el contexto de la IA
-            texto.append(pagina.extract_text() or "")
-    return "\n".join(texto)
+def generar_pdf_maquinas(maquinas, nombre_empresa="", logo_bytes=None):
+    """Genera un PDF con membrete (logo + nombre de empresa) y el listado de
+    máquinas ordenado por criticidad, para el informe de gerencia."""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    story = []
+
+    if logo_bytes:
+        try:
+            logo_buf = BytesIO(logo_bytes)
+            img = Image(logo_buf, width=3 * cm, height=3 * cm)
+            img.hAlign = "LEFT"
+            story.append(img)
+            story.append(Spacer(1, 8))
+        except Exception:
+            pass
+
+    titulo_style = ParagraphStyle("TituloEmpresa", parent=styles["Title"], fontSize=16, spaceAfter=2)
+    subtitulo_style = ParagraphStyle("Subtitulo", parent=styles["Normal"], fontSize=9, textColor=colors.grey)
+
+    if nombre_empresa:
+        story.append(Paragraph(nombre_empresa, titulo_style))
+    story.append(Paragraph("Listado de Máquinas y Criticidad", styles["Heading2"]))
+    story.append(Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}", subtitulo_style))
+    story.append(Spacer(1, 16))
+
+    orden_crit = {"A": 0, "B": 1, "C": 2}
+    maquinas_ordenadas = sorted(maquinas, key=lambda m: orden_crit.get(m.get("criticidad"), 3))
+
+    crit_texto = {"A": "Crítica (A)", "B": "Importante (B)", "C": "Menor (C)"}
+    data = [["Máquina", "Código", "Sección", "Criticidad"]]
+    for m in maquinas_ordenadas:
+        data.append([
+            m.get("nombre", "—"),
+            m.get("codigo", "—"),
+            m.get("seccion") or "—",
+            crit_texto.get(m.get("criticidad"), m.get("criticidad", "—"))
+        ])
+
+    tabla = Table(data, colWidths=[5.5 * cm, 3 * cm, 4 * cm, 3.5 * cm], repeatRows=1)
+    estilo = TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#12171B")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CCCCCC")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6F8")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ])
+    for i, m in enumerate(maquinas_ordenadas, start=1):
+        if m.get("criticidad") == "A":
+            estilo.add("TEXTCOLOR", (3, i), (3, i), colors.HexColor("#B91C1C"))
+            estilo.add("FONTNAME", (3, i), (3, i), "Helvetica-Bold")
+    tabla.setStyle(estilo)
+    story.append(tabla)
+
+    story.append(Spacer(1, 20))
+    resumen_txt = (
+        f"Total de máquinas: {len(maquinas)}  ·  "
+        f"Críticas (A): {len([m for m in maquinas if m.get('criticidad') == 'A'])}  ·  "
+        f"Importantes (B): {len([m for m in maquinas if m.get('criticidad') == 'B'])}  ·  "
+        f"Menores (C): {len([m for m in maquinas if m.get('criticidad') == 'C'])}"
+    )
+    story.append(Paragraph(resumen_txt, styles["Normal"]))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
 
-def generar_plan_con_ia(texto_manual: str, api_key: str):
-    """Devuelve (lista_de_tareas, error). lista_de_tareas es [{'tarea':..,'frecuencia_dias':..}, ...]"""
-    try:
-        import google.generativeai as genai
-    except ImportError:
-        return None, "Falta instalar 'google-generativeai'. Agregalo a requirements.txt."
+def _construir_costos_por_maquina(ots, maquinas, ot_repuestos, repuestos):
+    """Costo total (mano de obra + repuestos consumidos) agrupado por máquina."""
+    map_maquina = {m["id"]: m["nombre"] for m in maquinas}
+    map_repuesto_costo = {r["id"]: r.get("costo_unitario", 0) for r in repuestos}
 
-    if not api_key:
-        return None, "Falta la API Key de Gemini."
+    costo_repuestos_por_ot = {}
+    for orr in ot_repuestos:
+        ot_id = orr.get("ot_id")
+        costo = orr.get("cantidad_usada", 0) * map_repuesto_costo.get(orr.get("repuesto_id"), 0)
+        costo_repuestos_por_ot[ot_id] = costo_repuestos_por_ot.get(ot_id, 0) + costo
 
-    genai.configure(api_key=api_key)
-    modelo = genai.GenerativeModel("gemini-2.0-flash")
+    filas = {}
+    for o in ots:
+        m_nombre = map_maquina.get(o.get("maquina_id"), "Desconocida")
+        costo_mo = o.get("costo_mano_obra", 0) or 0
+        costo_rep = costo_repuestos_por_ot.get(o.get("id"), 0)
+        horas_paro = o.get("horas_paro", 0) or 0
 
-    prompt = f"""Sos un ingeniero de mantenimiento industrial. Te paso el texto extraído de un
-manual técnico de una máquina. Identificá las tareas de mantenimiento preventivo
-recomendadas por el fabricante y su frecuencia recomendada, convertida a DÍAS
-(si el manual dice "cada 500 horas" y no hay dato de uso diario, estimá una
-frecuencia en días razonable para uso industrial estándar, y decilo en el
-campo 'nota').
+        if m_nombre not in filas:
+            filas[m_nombre] = {"Máquina": m_nombre, "OTs": 0, "Costo Mano de Obra": 0, "Costo Repuestos": 0, "Costo Total": 0, "Horas de Paro": 0}
 
-Respondé ÚNICAMENTE con JSON válido, sin texto adicional ni backticks, con esta forma exacta:
-{{"tareas": [{{"tarea": "string", "frecuencia_dias": number, "nota": "string opcional"}}]}}
+        filas[m_nombre]["OTs"] += 1
+        filas[m_nombre]["Costo Mano de Obra"] += costo_mo
+        filas[m_nombre]["Costo Repuestos"] += costo_rep
+        filas[m_nombre]["Costo Total"] += costo_mo + costo_rep
+        filas[m_nombre]["Horas de Paro"] += horas_paro
 
-Si no encontrás información clara de mantenimiento preventivo en el texto, devolvé {{"tareas": []}}.
+    return sorted(filas.values(), key=lambda x: x["Costo Total"], reverse=True)
 
-Texto del manual (puede estar incompleto o truncado):
----
-{texto_manual[:15000]}
----
-"""
-    try:
-        respuesta = modelo.generate_content(prompt)
-        texto_resp = respuesta.text.strip()
-        texto_resp = texto_resp.replace("```json", "").replace("```", "").strip()
-        data = json.loads(texto_resp)
-        return data.get("tareas", []), None
-    except json.JSONDecodeError:
-        return None, "La IA no devolvió un JSON válido. Probá de nuevo o con un manual más corto."
-    except Exception as e:
-        return None, f"No se pudo generar el plan: {e}"
 
-def render_maquinas():
-    st.title("Máquinas")
-    st.write("Inventario base y criticidad operacional.")
+def construir_hojas_reporte(maquinas, fallas, ots, repuestos, terceros, planes, kpis):
+    """Arma los dataframes de cada hoja, reusados tanto en la vista previa
+    en pantalla como al generar el Excel final."""
+    map_maquina = {m["id"]: m["nombre"] for m in maquinas}
 
-    with st.expander("⚙️ Configurar URL de la app (para los QR de Recepción/Entrega)"):
-        st.session_state["app_base_url"] = st.text_input(
-            "URL pública de tu app en Streamlit Cloud",
-            value=st.session_state.get("app_base_url", ""),
-            placeholder="https://tu-app.streamlit.app"
+    resumen = pd.DataFrame([{
+        "Fecha del Reporte": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "Máquinas Registradas": len(maquinas),
+        "Disponibilidad (%)": kpis["disponibilidad"],
+        "MTTR (hrs)": kpis["mttr"],
+        "MTBF (hrs)": kpis["mtbf"],
+        "Horas de Paro Totales": kpis["horas_paro"],
+        "Fallas Abiertas": len([f for f in fallas if f.get("estado") != "Cerrada"]),
+        "Repuestos Críticos": len([r for r in repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)])
+    }])
+
+    backlog_rows = [{
+        "Código": o.get("codigo"),
+        "Máquina": map_maquina.get(o.get("maquina_id"), "Desconocida"),
+        "Tipo": o.get("tipo_mantenimiento"),
+        "Estado": o.get("estado"),
+        "Descripción": o.get("descripcion"),
+        "Horas de Paro": o.get("horas_paro")
+    } for o in ots if o.get("estado") != "Completada"]
+    backlog = pd.DataFrame(backlog_rows if backlog_rows else [{"Info": "Sin pendientes"}])
+
+    costos_rows = _construir_costos_por_maquina(ots, maquinas, st.session_state.get("ot_repuestos", []), repuestos)
+    costos = pd.DataFrame(costos_rows if costos_rows else [{"Info": "Sin datos de costos aún"}])
+
+    criticos_rows = [{
+        "Repuesto": r.get("nombre"),
+        "Código Interno": r.get("codigo_interno"),
+        "Stock Actual": r.get("stock_actual"),
+        "Stock Mínimo": r.get("stock_minimo")
+    } for r in repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)]
+    criticos = pd.DataFrame(criticos_rows if criticos_rows else [{"Info": "Sin repuestos críticos"}])
+
+    inventario_rows = [{
+        "Repuesto": r.get("nombre"),
+        "Código Interno": r.get("codigo_interno"),
+        "Stock Actual": r.get("stock_actual", 0),
+        "Stock Mínimo": r.get("stock_minimo", 0),
+        "Costo Unitario (Gs.)": r.get("costo_unitario", 0),
+        "Valor Total (Gs.)": (r.get("stock_actual", 0) or 0) * (r.get("costo_unitario", 0) or 0)
+    } for r in repuestos]
+    inventario = pd.DataFrame(inventario_rows if inventario_rows else [{"Info": "Sin repuestos cargados"}])
+
+    hoy = datetime.now().date()
+    actividades_por_plan = {}
+    for a in st.session_state.get("plan_actividades", []):
+        actividades_por_plan.setdefault(a.get("plan_id"), []).append(a.get("actividad"))
+
+    plan_rows = []
+    for p in planes:
+        try:
+            fecha_prox = datetime.strptime(p.get("proxima_ejecucion"), "%Y-%m-%d").date()
+            dias = (fecha_prox - hoy).days
+        except (TypeError, ValueError):
+            dias = None
+        plan_rows.append({
+            "Máquina": map_maquina.get(p.get("maquina_id"), "Desconocida"),
+            "Plan": p.get("nombre_plan"),
+            "Actividades": "; ".join(actividades_por_plan.get(p.get("id"), [])) or "—",
+            "Frecuencia (días)": p.get("frecuencia_dias"),
+            "Próxima Ejecución": p.get("proxima_ejecucion"),
+            "Días Restantes": dias
+        })
+    plan_df = pd.DataFrame(plan_rows if plan_rows else [{"Info": "Sin plan preventivo cargado"}])
+
+    venc_rows = [{
+        "Equipo": t.get("nombre"),
+        "Proveedor": t.get("contacto"),
+        "Próximo Vencimiento": t.get("proximoVencimiento")
+    } for t in terceros]
+    terceros_df = pd.DataFrame(venc_rows if venc_rows else [{"Info": "Sin terceros cargados"}])
+
+    return {
+        "Resumen Ejecutivo": resumen,
+        "Backlog OTs": backlog,
+        "Costos por Máquina": costos,
+        "Inventario Completo": inventario,
+        "Repuestos Críticos": criticos,
+        "Plan Preventivo": plan_df,
+        "Terceros": terceros_df
+    }
+
+
+def generar_excel_reporte(hojas: dict, nombre_empresa="", logo_bytes=None):
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for nombre_hoja, df in hojas.items():
+            fila_inicio = 5 if (nombre_hoja == "Resumen Ejecutivo" and (nombre_empresa or logo_bytes)) else 0
+            df.to_excel(writer, sheet_name=nombre_hoja, index=False, startrow=fila_inicio)
+
+            if nombre_hoja == "Resumen Ejecutivo" and (nombre_empresa or logo_bytes):
+                ws = writer.sheets[nombre_hoja]
+                if nombre_empresa:
+                    ws["C1"] = nombre_empresa
+                    ws["C1"].font = Font(size=16, bold=True)
+                ws["C2"] = "Reporte de Mantenimiento"
+                ws["C2"].font = Font(size=12, bold=True)
+                ws["C3"] = f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                if logo_bytes:
+                    img_buf = BytesIO(logo_bytes)
+                    xl_img = XLImage(img_buf)
+                    xl_img.width = 70
+                    xl_img.height = 70
+                    ws.add_image(xl_img, "A1")
+    buffer.seek(0)
+    return buffer
+
+
+def render_reportes():
+    st.title("📑 Reportes para Gerencia")
+    st.write("Mirá los datos acá mismo — descargalos solo si necesitás el archivo.")
+
+    maquinas = st.session_state.get("maquinas", [])
+    fallas = st.session_state.get("fallas", [])
+    ots = st.session_state.get("ots", [])
+    repuestos = st.session_state.get("repuestos", [])
+    terceros = st.session_state.get("terceros", [])
+    planes = st.session_state.get("planes", [])
+
+    kpis = calcular_kpis_industriales(maquinas, fallas, ots)
+
+    st.markdown("##### 🖼️ Membrete de la empresa")
+    st.caption("Se guarda una sola vez en la base de datos — no hace falta volver a subir el logo cada vez.")
+
+    config_actual = st.session_state.get("config_empresa", {}) or {}
+    nombre_empresa = st.text_input(
+        "Nombre de la empresa",
+        value=config_actual.get("nombre_empresa", "") or ""
+    )
+    logo_file = st.file_uploader("Logo de la empresa (PNG o JPG) — subilo solo si querés cambiarlo", type=["png", "jpg", "jpeg"])
+
+    if st.button("💾 Guardar Membrete"):
+        if logo_file:
+            logo_base64_nuevo = base64.b64encode(logo_file.read()).decode("utf-8")
+        else:
+            logo_base64_nuevo = config_actual.get("logo_base64", "")
+        guardar_configuracion_empresa(nombre_empresa, logo_base64_nuevo)
+        st.session_state.config_empresa = {"nombre_empresa": nombre_empresa, "logo_base64": logo_base64_nuevo}
+        st.success("✅ Membrete guardado. Ya no hace falta volver a cargarlo.")
+        st.rerun()
+
+    logo_bytes = base64.b64decode(config_actual["logo_base64"]) if config_actual.get("logo_base64") else None
+
+    # --- VISTA PREVIA SIEMPRE VISIBLE, EN PESTAÑAS (sin necesidad de descargar) ---
+    st.markdown("---")
+    st.markdown("##### 👁️ Vista previa del reporte")
+
+    hojas = construir_hojas_reporte(maquinas, fallas, ots, repuestos, terceros, planes, kpis)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Disponibilidad", f"{kpis['disponibilidad']}%")
+    c2.metric("MTTR", f"{kpis['mttr']} hrs")
+    c3.metric("MTBF", f"{kpis['mtbf']} hrs")
+    c4.metric("Horas de Paro Totales", f"{kpis['horas_paro']} hrs")
+
+    tabs = st.tabs(list(hojas.keys()))
+    for tab, (nombre_hoja, df) in zip(tabs, hojas.items()):
+        with tab:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # --- GRÁFICOS ---
+    st.markdown("---")
+    st.markdown("##### 📊 Gráficos")
+
+    col_g1, col_g2 = st.columns(2)
+
+    with col_g1:
+        st.markdown("**Costo total por máquina**")
+        df_costos = hojas["Costos por Máquina"]
+        if "Costo Total" in df_costos.columns and not df_costos.empty:
+            st.bar_chart(df_costos.set_index("Máquina")["Costo Total"])
+        else:
+            st.caption("Todavía no hay costos cargados en las OTs.")
+
+    with col_g2:
+        st.markdown("**OTs por estado**")
+        if ots:
+            conteo_estado = pd.Series([o.get("estado", "Sin estado") for o in ots]).value_counts()
+            st.bar_chart(conteo_estado)
+        else:
+            st.caption("Todavía no hay OTs cargadas.")
+
+    col_g3, col_g4 = st.columns(2)
+
+    with col_g3:
+        st.markdown("**Fallas por estado**")
+        if fallas:
+            conteo_fallas = pd.Series([f.get("estado", "Sin estado") for f in fallas]).value_counts()
+            st.bar_chart(conteo_fallas)
+        else:
+            st.caption("Todavía no hay fallas registradas.")
+
+    with col_g4:
+        st.markdown("**Stock actual vs. mínimo (repuestos críticos)**")
+        df_criticos_chart = hojas["Repuestos Críticos"]
+        if "Repuesto" in df_criticos_chart.columns and not df_criticos_chart.empty:
+            st.bar_chart(df_criticos_chart.set_index("Repuesto")[["Stock Actual", "Stock Mínimo"]])
+        else:
+            st.caption("No hay repuestos en nivel crítico ahora mismo. 🎉")
+
+    if st.button("📥 Generar y Descargar Excel"):
+        buffer = generar_excel_reporte(hojas, nombre_empresa, logo_bytes)
+        st.download_button(
+            label="⬇️ Descargar Reporte_Mantenimiento.xlsx",
+            data=buffer,
+            file_name=f"Reporte_Mantenimiento_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        st.caption("Se necesita una sola vez. Es la URL que ves en el navegador cuando abrís tu app ya desplegada.")
-    
-    # Formulario desplegable mediante checkbox de Streamlit
-    if st.checkbox("+ Nueva Máquina"):
-        with st.form("form_nueva_maquina", clear_on_submit=True):
-            nombre = st.text_input("Nombre / Tag *", placeholder="Ej: Extrusora 02")
-            codigo = st.text_input("Código Único *", placeholder="Ej: EXT-002")
-            seccion = st.text_input("Sección / Área", placeholder="Ej: Planta A - Línea 2")
-            criticidad = st.selectbox("Criticidad", ["A", "B", "C"], format_func=lambda x: CRIT_LABELS[x])
-            
-            submit = st.form_submit_button("Guardar Máquina")
-            if submit:
-                if not nombre.strip() or not codigo.strip():
-                    st.error("El nombre y el código de la máquina son obligatorios.")
-                else:
-                    # El ID no se envía en el payload ya que Supabase lo genera automáticamente como BIGINT
-                    payload = {
-                        "nombre": nombre,
-                        "codigo": codigo,
-                        "seccion": seccion,
-                        "criticidad": criticidad
-                    }
-                    insert_maquina(payload)
-                    st.session_state.maquinas = get_maquinas()
-                    st.success(f"Máquina '{nombre}' guardada con éxito.")
-                    st.rerun()
+        st.success("✅ Excel listo para descargar.")
 
-    # Listado en Interfaz Industrial
-    st.markdown("<br>", unsafe_allow_html=True)
-    if not st.session_state.maquinas:
-        st.info("Todavía no has cargado ninguna máquina.")
-    else:
-        for m in st.session_state.maquinas:
-            col_info, col_action = st.columns([0.85, 0.15])
-            with col_info:
-                st.markdown(f"""
-                <div class='industrial-panel'>
-                    <strong>{m.get('nombre')}</strong> <small style='color:#38BDF8;'>[{m.get('codigo')}]</small> — 
-                    <small style='color:#7C8894;'>{m.get('seccion') or 'sin sección'}</small><br>
-                    <span>Criticidad: {CRIT_LABELS.get(m.get('criticidad'), m.get('criticidad'))}</span>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_action:
-                # Se utiliza el ID numérico de Supabase para la clave del botón
-                if st.button("🗑️ Eliminar", key=f"del_m_{m.get('id')}"):
-                    delete_maquina(m.get('id'))
-                    st.session_state.maquinas = get_maquinas()
-                    st.rerun()
+    # --- LISTADO DE MÁQUINAS EN PDF: previsualizado inline, sin forzar descarga ---
+    st.markdown("---")
+    st.markdown("##### 📄 Listado de Máquinas y Criticidad (PDF con membrete)")
+    st.caption("Ideal para el primer informe a gerencia — usa el mismo nombre y logo que cargaste arriba.")
 
-            # --- DOCUMENTACIÓN TÉCNICA (manuales, planos, fichas) ---
-            docs_maquina = [d for d in st.session_state.get("documentos", []) if d.get("maquina_id") == m.get("id")]
-            with st.expander(f"📎 Documentos técnicos ({len(docs_maquina)})"):
-                if docs_maquina:
-                    for d in docs_maquina:
-                        col_d, col_x = st.columns([0.85, 0.15])
-                        col_d.markdown(f"[{d.get('nombre_archivo')}]({d.get('url')}) · {d.get('tipo') or 'General'}")
-                        if col_x.button("🗑️", key=f"del_doc_{d.get('id')}"):
-                            delete_documento(d.get('id'))
-                            st.session_state.documentos = get_documentos()
-                            st.rerun()
-                else:
-                    st.caption("Sin documentos cargados todavía.")
+    if st.button("👁️ Generar Vista Previa del PDF"):
+        pdf_buffer = generar_pdf_maquinas(maquinas, nombre_empresa, logo_bytes)
+        st.session_state["_pdf_preview_bytes"] = pdf_buffer.getvalue()
 
-                with st.form(f"form_doc_{m.get('id')}", clear_on_submit=True):
-                    nombre_doc = st.text_input("Nombre del documento", placeholder="Ej: Manual eléctrico Extrusora 02")
-                    url_doc = st.text_input("Link (Google Drive, OneDrive, etc.)")
-                    tipo_doc = st.selectbox("Tipo", ["Manual", "Plano", "Ficha Técnica", "Foto", "Otro"], key=f"tipo_doc_{m.get('id')}")
-                    if st.form_submit_button("Adjuntar documento"):
-                        if not nombre_doc.strip() or not url_doc.strip():
-                            st.error("❌ Nombre y link son obligatorios.")
-                        else:
-                            insert_documento({
-                                "maquina_id": m.get("id"),
-                                "nombre_archivo": nombre_doc,
-                                "url": url_doc,
-                                "tipo": tipo_doc
-                            })
-                            st.session_state.documentos = get_documentos()
-                            st.success("✅ Documento adjuntado.")
-                            st.rerun()
+    if st.session_state.get("_pdf_preview_bytes"):
+        # Chrome bloquea los iframes con PDF embebido como data:URI cuando la
+        # página ya está dentro de otro iframe (como pasa en Streamlit Cloud).
+        # Por eso mostramos cada página del PDF como imagen, no como iframe.
+        doc_pdf = pymupdf.open(stream=st.session_state["_pdf_preview_bytes"], filetype="pdf")
+        for i, pagina in enumerate(doc_pdf):
+            pix = pagina.get_pixmap(dpi=150)
+            st.image(pix.tobytes("png"), use_container_width=True, caption=f"Página {i + 1} de {len(doc_pdf)}")
+        doc_pdf.close()
 
-            # --- QR PARA RECEPCIÓN / ENTREGA DESDE LA MÁQUINA ---
-            with st.expander("📱 Código QR de Recepción / Entrega"):
-                base_url = st.session_state.get("app_base_url", "")
-                if not base_url:
-                    st.warning("Configurá la URL de tu app arriba (⚙️ Configurar URL) para poder generar el QR.")
-                else:
-                    url_qr = f"{base_url.rstrip('/')}/?maquina_id={m.get('id')}&vista=checklist"
-                    qr_bytes = generar_qr_png(url_qr)
-                    st.image(qr_bytes, caption=f"Escanear para Recepción/Entrega de {m.get('nombre')}", width=200)
-                    st.code(url_qr, language=None)
-                    st.download_button(
-                        "⬇️ Descargar QR (PNG)",
-                        data=qr_bytes,
-                        file_name=f"QR_{m.get('codigo')}.png",
-                        mime="image/png",
-                        key=f"dl_qr_{m.get('id')}"
-                    )
-
-            # --- GENERAR PLAN PREVENTIVO CON IA A PARTIR DEL MANUAL ---
-            with st.expander("🤖 Generar Plan Preventivo con IA (desde el manual)"):
-                api_key_secret = st.secrets.get("GEMINI_API_KEY", "")
-                if api_key_secret:
-                    api_key_usar = api_key_secret
-                    st.caption("Usando la GEMINI_API_KEY configurada en los secrets de la app.")
-                else:
-                    api_key_usar = st.text_input(
-                        "Pegá tu API Key de Gemini (solo para esta sesión, no se guarda)",
-                        type="password",
-                        key=f"api_key_{m.get('id')}",
-                        help="Se recomienda configurarla en Streamlit Cloud > Settings > Secrets como GEMINI_API_KEY en vez de pegarla acá cada vez."
-                    )
-
-                manual_pdf = st.file_uploader(
-                    "Subí el manual del fabricante (PDF)", type=["pdf"], key=f"manual_pdf_{m.get('id')}"
-                )
-
-                if st.button("🔍 Analizar manual y sugerir plan", key=f"analizar_{m.get('id')}"):
-                    if not manual_pdf:
-                        st.error("❌ Subí un PDF primero.")
-                    elif not api_key_usar:
-                        st.error("❌ Falta la API Key de Gemini.")
-                    else:
-                        with st.spinner("Leyendo el manual y consultando la IA..."):
-                            texto_manual = extraer_texto_pdf(manual_pdf)
-                            if not texto_manual.strip():
-                                st.error("❌ No se pudo extraer texto del PDF (¿es un escaneo sin OCR?).")
-                            else:
-                                tareas_sugeridas, error = generar_plan_con_ia(texto_manual, api_key_usar)
-                                if error:
-                                    st.error(f"❌ {error}")
-                                elif not tareas_sugeridas:
-                                    st.warning("La IA no encontró tareas de mantenimiento preventivo claras en este manual.")
-                                else:
-                                    st.session_state[f"tareas_ia_{m.get('id')}"] = tareas_sugeridas
-
-                tareas_ia = st.session_state.get(f"tareas_ia_{m.get('id')}")
-                if tareas_ia:
-                    st.write("**Tareas sugeridas — revisá y ajustá antes de cargarlas:**")
-                    tareas_editadas = st.data_editor(
-                        tareas_ia,
-                        column_config={
-                            "tarea": "Tarea",
-                            "frecuencia_dias": st.column_config.NumberColumn("Frecuencia (días)", min_value=1, step=1),
-                            "nota": "Nota de la IA"
-                        },
-                        num_rows="dynamic",
-                        key=f"editor_ia_{m.get('id')}",
-                        use_container_width=True
-                    )
-                    if st.button("✅ Cargar estas tareas al Plan Preventivo", key=f"cargar_ia_{m.get('id')}"):
-                        hoy = datetime.now().date()
-                        for t in tareas_editadas:
-                            if not t.get("tarea") or not t.get("frecuencia_dias"):
-                                continue
-                            proxima = hoy + timedelta(days=int(t["frecuencia_dias"]))
-                            insert_plan({
-                                "maquina_id": m.get("id"),
-                                "tarea": t["tarea"],
-                                "frecuencia_dias": int(t["frecuencia_dias"]),
-                                "ultima_ejecucion": None,
-                                "proxima_ejecucion": proxima.strftime("%Y-%m-%d")
-                            })
-                        st.session_state.planes = get_planes()
-                        del st.session_state[f"tareas_ia_{m.get('id')}"]
-                        st.success(f"✅ {len(tareas_editadas)} tarea(s) cargada(s) al Plan Preventivo de {m.get('nombre')}.")
-                        st.rerun()
+        st.download_button(
+            label="⬇️ Descargar Listado_Maquinas.pdf",
+            data=st.session_state["_pdf_preview_bytes"],
+            file_name=f"Listado_Maquinas_{datetime.now().strftime('%Y%m%d')}.pdf",
+            mime="application/pdf"
+        )
