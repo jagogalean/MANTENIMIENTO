@@ -1,24 +1,21 @@
 import streamlit as st
 import pandas as pd
 import base64
-import pymupdf
 from io import BytesIO
 from datetime import datetime
 from views.dashboard import calcular_kpis_industriales
 from database.conection import guardar_configuracion_empresa
 
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from openpyxl.drawing.image import Image as XLImage
-from openpyxl.styles import Font
-
 
 def generar_pdf_maquinas(maquinas, nombre_empresa="", logo_bytes=None):
     """Genera un PDF con membrete (logo + nombre de empresa) y el listado de
     máquinas ordenado por criticidad, para el informe de gerencia."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
     styles = getSampleStyleSheet()
@@ -207,6 +204,9 @@ def construir_hojas_reporte(maquinas, fallas, ots, repuestos, terceros, planes, 
 
 
 def generar_excel_reporte(hojas: dict, nombre_empresa="", logo_bytes=None):
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Font
+
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         for nombre_hoja, df in hojas.items():
@@ -343,6 +343,7 @@ def render_reportes():
         st.session_state["_pdf_preview_bytes"] = pdf_buffer.getvalue()
 
     if st.session_state.get("_pdf_preview_bytes"):
+        import pymupdf  # import perezoso: solo pesa en memoria si de verdad se usa esta función
         # Chrome bloquea los iframes con PDF embebido como data:URI cuando la
         # página ya está dentro de otro iframe (como pasa en Streamlit Cloud).
         # Por eso mostramos cada página del PDF como imagen, no como iframe.
