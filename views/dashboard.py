@@ -194,9 +194,10 @@ def render_dashboard():
         st.info("Todavía no hay costos ni horas de paro registrados en OTs.")
     else:
         for r in ranking_maquinas:
+            costo_fmt = f"{r['costo_total']:,.0f}".replace(",", ".")
             st.markdown(f"""
             <div class='industrial-panel'>
                 <strong>{r['nombre']}</strong><br>
-                <span>Costo acumulado: <strong>${r['costo_total']:,.2f}</strong> · Horas de paro: <strong>{r['horas_paro']}</strong></span>
+                <span>Costo acumulado: <strong>Gs. {costo_fmt}</strong> · Horas de paro: <strong>{r['horas_paro']}</strong></span>
             </div>
             """, unsafe_allow_html=True)
