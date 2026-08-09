@@ -1,5 +1,4 @@
 import streamlit as st
-import uuid
 from datetime import datetime
 from database.conection import insert_checklist, delete_checklist, get_checklists
 
@@ -47,18 +46,17 @@ def render_checklists():
             temperatura = c6.text_input("Temperatura (°C)")
             presion = c7.text_input("Presión (bar)")
             
-            repuestos = st.text_input("Repuestos Utilizados")
+            repuestos_usados = st.text_input("Repuestos Utilizados")
             observaciones = st.text_area("Observaciones Generales")
             conformidad = st.checkbox("Operador conforme con la entrega técnica de la línea")
             
             submit = st.form_submit_button("Guardar Inspección")
             if submit:
-                new_id = str(uuid.uuid4())
                 payload = {
-                    "id": new_id, "maquinaId": maquina_id, "fecha": fecha, "hora": hora,
-                    "tecnico": tecnico, "estadoRecibido": est_recibido, "estadoEntregado": est_entregado,
+                    "maquina_id": maquina_id, "fecha": fecha, "hora": hora,
+                    "tecnico": tecnico, "estado_recibido": est_recibido, "estado_entregado": est_entregado,
                     "vibracion": vibracion, "temperatura": temperatura, "presion": presion,
-                    "repuestos": repuestos, "observaciones": observaciones, "conformidad": conformidad
+                    "repuestos": repuestos_usados, "observaciones": observaciones, "conformidad": conformidad
                 }
                 insert_checklist(payload)
                 st.session_state.checklists = get_checklists()
@@ -75,7 +73,7 @@ def render_checklists():
     else:
         dict_m = {m["id"]: m["nombre"] for m in st.session_state.maquinas}
         for c in st.session_state.checklists:
-            m_nom = dict_m.get(c.get("maquinaId"), "Máquina Desconocida")
+            m_nom = dict_m.get(c.get("maquina_id"), "Máquina Desconocida")
             conf_txt = "🟢 Conforme" if c.get("conformidad") else "🟠 Sin Conformidad"
             
             col_l, col_r = st.columns([0.85, 0.15])
@@ -83,7 +81,7 @@ def render_checklists():
                 st.markdown(f"""
                 <div class='industrial-panel'>
                     <strong>{m_nom}</strong> — <small>{c.get('fecha')} {c.get('hora')} · {c.get('tecnico') or '—'}</small><br>
-                    <span>Recibida: {c.get('estadoRecibido')} ➔ Entregada: {c.get('estadoEntregado')}</span><br>
+                    <span>Recibida: {c.get('estado_recibido')} ➔ Entregada: {c.get('estado_entregado')}</span><br>
                     <strong>Conformidad del operador: {conf_txt}</strong>
                 </div>
                 """, unsafe_allow_html=True)
