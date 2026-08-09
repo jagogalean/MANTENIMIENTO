@@ -65,19 +65,26 @@ def _dias_realizados_en_mes(ejecuciones_plan, anio, mes):
     return dias
 
 
-def _preparar_tareas(planes, ejecuciones, maquinas_filtradas_ids=None):
-    """Arma la lista de tareas con su historial de ejecuciones ya agrupado."""
+def _preparar_tareas(planes, ejecuciones, actividades, maquinas_filtradas_ids=None):
+    """Arma la lista de PLANES (no de tareas sueltas) con su historial de
+    ejecuciones y la lista de actividades que incluye cada uno."""
     ejecuciones_por_plan = {}
     for e in ejecuciones:
         ejecuciones_por_plan.setdefault(e.get("plan_id"), []).append(e)
+
+    actividades_por_plan = {}
+    for a in actividades:
+        actividades_por_plan.setdefault(a.get("plan_id"), []).append(a.get("actividad"))
 
     tareas = []
     for p in planes:
         if maquinas_filtradas_ids is not None and p.get("maquina_id") not in maquinas_filtradas_ids:
             continue
+        lista_actividades = actividades_por_plan.get(p.get("id"), [])
         tareas.append({
             "plan_id": p.get("id"),
-            "tarea": p.get("tarea"),
+            "tarea": p.get("nombre_plan"),
+            "actividades": lista_actividades,
             "maquina_id": p.get("maquina_id"),
             "frecuencia_dias": p.get("frecuencia_dias", 30),
             "ultima_ejecucion": p.get("ultima_ejecucion"),
@@ -94,8 +101,9 @@ def construir_dataframe_mes(tareas, map_maquina_nombre, anio, mes):
     filas = []
     for t in tareas:
         fila = {
-            "Actividad": t["tarea"],
+            "Plan": t["tarea"],
             "Máquina": map_maquina_nombre.get(t["maquina_id"], "?"),
+            "Actividades": "; ".join(t.get("actividades", [])) or "—",
             "Frec. (días)": t["frecuencia_dias"]
         }
         dias_prog = _dias_programados_en_mes(t.get("ultima_ejecucion"), t["frecuencia_dias"], anio, mes)
@@ -126,7 +134,7 @@ def mostrar_vista_previa_mes(tareas, map_maquina_nombre, anio, mes):
     df = construir_dataframe_mes(tareas, map_maquina_nombre, anio, mes)
     columnas_dias = [c for c in df.columns if c.isdigit()]
     st.dataframe(
-        df.style.map(_colorear_celda, subset=columnas_dias),
+        df.style.applymap(_colorear_celda, subset=columnas_dias),
         use_container_width=True,
         hide_index=True
     )
@@ -138,7 +146,7 @@ def mostrar_vista_previa_mes(tareas, map_maquina_nombre, anio, mes):
 # ---------------------------------------------------------------
 def _escribir_hoja_mes(ws, tareas, map_maquina_nombre, anio, mes, nombre_empresa, logo_bytes, titulo_maquina):
     ultimo_dia = calendar.monthrange(anio, mes)[1]
-    col_actividad, col_maquina, col_frecuencia, primera_col_dia = 1, 2, 3, 4
+    col_actividad, col_maquina, col_actividades_lista, col_frecuencia, primera_col_dia = 1, 2, 3, 4, 5
     ultima_col_dia = primera_col_dia + ultimo_dia - 1
 
     fill_header = PatternFill("solid", fgColor="12171B")
@@ -171,8 +179,9 @@ def _escribir_hoja_mes(ws, tareas, map_maquina_nombre, anio, mes, nombre_empresa
     ws.row_dimensions[2].height = 18
 
     fila_header = 4
-    ws.cell(row=fila_header, column=col_actividad, value="Actividad").font = Font(bold=True, color="FFFFFF")
+    ws.cell(row=fila_header, column=col_actividad, value="Plan").font = Font(bold=True, color="FFFFFF")
     ws.cell(row=fila_header, column=col_maquina, value="Máquina").font = Font(bold=True, color="FFFFFF")
+    ws.cell(row=fila_header, column=col_actividades_lista, value="Actividades Incluidas").font = Font(bold=True, color="FFFFFF")
     ws.cell(row=fila_header, column=col_frecuencia, value="Frecuencia (días)").font = Font(bold=True, color="FFFFFF")
     for c in range(1, col_frecuencia + 1):
         ws.cell(row=fila_header, column=c).fill = fill_header
@@ -200,6 +209,8 @@ def _escribir_hoja_mes(ws, tareas, map_maquina_nombre, anio, mes, nombre_empresa
     for t in tareas:
         ws.cell(row=fila_actual, column=col_actividad, value=t["tarea"])
         ws.cell(row=fila_actual, column=col_maquina, value=map_maquina_nombre.get(t["maquina_id"], "?"))
+        celda_acts = ws.cell(row=fila_actual, column=col_actividades_lista, value="; ".join(t.get("actividades", [])) or "—")
+        celda_acts.alignment = Alignment(wrap_text=True, vertical="top")
         ws.cell(row=fila_actual, column=col_frecuencia, value=t["frecuencia_dias"])
 
         dias_prog = _dias_programados_en_mes(t.get("ultima_ejecucion"), t["frecuencia_dias"], anio, mes)
@@ -222,9 +233,10 @@ def _escribir_hoja_mes(ws, tareas, map_maquina_nombre, anio, mes, nombre_empresa
     fila_leyenda = fila_actual + 1
     ws.cell(row=fila_leyenda, column=1, value="🔵 X = programado (proyección)   🟢 ✓ = realizado según historial").font = Font(size=9, italic=True)
 
-    ws.column_dimensions["A"].width = 30
-    ws.column_dimensions["B"].width = 20
-    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["A"].width = 26
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 40
+    ws.column_dimensions["D"].width = 14
     ws.freeze_panes = ws.cell(row=fila_header + 2, column=primera_col_dia)
 
 
@@ -261,6 +273,7 @@ def render_calendario():
     maquinas = st.session_state.get("maquinas", [])
     planes = st.session_state.get("planes", [])
     ejecuciones = st.session_state.get("plan_ejecuciones", [])
+    actividades_todas = st.session_state.get("plan_actividades", [])
 
     if not maquinas:
         st.warning("Registrá al menos una máquina primero.")
@@ -289,7 +302,7 @@ def render_calendario():
 
     maquinas_filtradas_ids = None if maquina_sel == "Todas las Máquinas" else {dict_maquinas[maquina_sel]}
     titulo_maquina = "Todas las Máquinas" if maquina_sel == "Todas las Máquinas" else maquina_sel
-    tareas = _preparar_tareas(planes, ejecuciones, maquinas_filtradas_ids)
+    tareas = _preparar_tareas(planes, ejecuciones, actividades_todas, maquinas_filtradas_ids)
 
     if not tareas:
         st.warning("No hay tareas de plan preventivo para esa máquina.")
