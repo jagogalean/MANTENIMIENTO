@@ -6,3 +6,4 @@ openpyxl
 reportlab
 pdfplumber
 google-generativeai
+PyMuPDF
