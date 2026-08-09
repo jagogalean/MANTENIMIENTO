@@ -1,24 +1,28 @@
 import streamlit as st
-import uuid
 from database.conection import insert_tercero, delete_tercero, get_terceros
 
 def render_terceros():
     st.title("Terceros y Contratos Externos")
     st.write("Seguimiento a vencimientos de calibraciones o asistencias técnicas externas.")
-    
+
     if st.checkbox("+ Registrar Equipo / Proveedor Externo"):
         with st.form("form_terceros", clear_on_submit=True):
-            equipo = st.text_input("Equipo Industrial *", placeholder="Ej: Caldera de Vapor Central")
-            proveedor = st.text_input("Empresa Proveedora / Tercero")
+            nombre = st.text_input("Equipo / Nombre del Servicio *", placeholder="Ej: Caldera de Vapor Central")
+            contacto = st.text_input("Empresa Proveedora / Contacto")
+            servicio = st.text_input("Tipo de Servicio", placeholder="Ej: Calibración, Mantenimiento externo")
             proximo_venc = st.date_input("Próximo Vencimiento / Calibración").strftime("%Y-%m-%d")
-            
+
             submit = st.form_submit_button("Guardar Registro Técnico")
             if submit:
-                if not equipo.strip():
+                if not nombre.strip():
                     st.error("El nombre del equipo es mandatorio.")
                 else:
-                    new_id = str(uuid.uuid4())
-                    payload = {"id": new_id, "equipo": equipo, "proveedor": proveedor, "proximoVencimiento": proximo_venc}
+                    payload = {
+                        "nombre": nombre,
+                        "contacto": contacto,
+                        "servicio": servicio,
+                        "proximoVencimiento": proximo_venc
+                    }
                     insert_tercero(payload)
                     st.session_state.terceros = get_terceros()
                     st.success("Registro de contratista almacenado.")
@@ -34,7 +38,8 @@ def render_terceros():
             with col_d:
                 st.markdown(f"""
                 <div class='industrial-panel'>
-                    <strong>{t.get('equipo')}</strong> — <small>Proveedor: {t.get('proveedor') or '—'}</small><br>
+                    <strong>{t.get('nombre')}</strong> — <small>Proveedor: {t.get('contacto') or '—'}</small>
+                    {f" · <small style='color:#7C8894;'>{t.get('servicio')}</small>" if t.get('servicio') else ""}<br>
                     <span style='color: #F2A93B;'>Próxima Intervención: {t.get('proximoVencimiento')}</span>
                 </div>
                 """, unsafe_allow_html=True)
