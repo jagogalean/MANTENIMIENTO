@@ -1,7 +1,6 @@
 import streamlit as st
-import uuid
 from datetime import datetime
-from database.conection import insert_maquina, delete_maquina, get_maquinas
+from database.conection import insert_falla, update_falla, get_fallas
 
 def render_fallas():
     st.title("Fallas y Análisis de Causa Raíz (RCA)")
@@ -30,11 +29,10 @@ def render_fallas():
                 if not descripcion.strip():
                     st.error("La descripción es obligatoria.")
                 else:
-                    new_id = str(uuid.uuid4())
                     payload = {
-                        "id": new_id, "maquinaId": maquina_id, "fecha": fecha, "tecnico": tecnico,
+                        "maquina_id": maquina_id, "fecha_deteccion": fecha, "tecnico": tecnico,
                         "sintomas": sintomas, "descripcion": descripcion, "estado": "Abierta",
-                        "metodoRCA": None, "rca": {}, "causaRaiz": "", "accion": ""
+                        "metodo_rca": None, "rca": {}, "causa_raiz": "", "accion": ""
                     }
                     insert_falla(payload)
                     st.session_state.fallas = get_fallas()
@@ -48,14 +46,14 @@ def render_fallas():
     else:
         dict_m = {m["id"]: m["nombre"] for m in st.session_state.maquinas}
         for f in st.session_state.fallas:
-            m_nombre = dict_m.get(f.get("maquinaId"), "Máquina Desconocida")
+            m_nombre = dict_m.get(f.get("maquina_id"), "Máquina Desconocida")
             
             col_t, col_b = st.columns([0.8, 0.2])
             with col_t:
                 st.markdown(f"""
                 <div class='industrial-panel'>
-                    <strong>{m_nombre}</strong> — <small>{f.get('fecha')}</small><br>
-                    <span style='color: #C7CFD6;'>{f.get('descripcion')[:80]}...</span><br>
+                    <strong>{m_nombre}</strong> — <small>{f.get('fecha_deteccion')}</small><br>
+                    <span style='color: #C7CFD6;'>{(f.get('descripcion') or '')[:80]}...</span><br>
                     <span>Estado: <code>{f.get('estado')}</code></span>
                 </div>
                 """, unsafe_allow_html=True)
@@ -75,22 +73,22 @@ def render_falla_detalle(falla_id):
         st.rerun()
         
     dict_m = {m["id"]: m for m in st.session_state.maquinas}
-    m = dict_m.get(falla.get("maquinaId"), {})
+    m = dict_m.get(falla.get("maquina_id"), {})
     
     st.subheader(f"Análisis Falla: {m.get('nombre', '—')}")
-    st.info(f"**Descripción:** {falla.get('descripcion')}\n\n**Fecha:** {falla.get('fecha')} | **Técnico:** {falla.get('tecnico')}")
+    st.info(f"**Descripción:** {falla.get('descripcion')}\n\n**Fecha:** {falla.get('fecha_deteccion')} | **Técnico:** {falla.get('tecnico')}")
     
     # 1. Selección de metodología RCA
-    metodo = falla.get("metodoRCA")
+    metodo = falla.get("metodo_rca")
     if not metodo:
         st.write("### Seleccione el método de análisis de causa raíz")
         c1, c2 = st.columns(2)
         if c1.button("5 Porqués (Fallas Directas)"):
-            update_falla(falla_id, {"metodoRCA": "5porques", "estado": "En análisis"})
+            update_falla(falla_id, {"metodo_rca": "5porques", "estado": "En análisis"})
             st.session_state.fallas = get_fallas()
             st.rerun()
         if c2.button("Ishikawa (6M - Complejas)"):
-            update_falla(falla_id, {"metodoRCA": "ishikawa", "estado": "En análisis"})
+            update_falla(falla_id, {"metodo_rca": "ishikawa", "estado": "En análisis"})
             st.session_state.fallas = get_fallas()
             st.rerun()
             
@@ -119,7 +117,7 @@ def render_falla_detalle(falla_id):
                 new_rca = {"metodo": m1, "maquina": m2, "manoObra": m3, "material": m4, "medicion": m5, "medioAmbiente": m6}
                 
             st.write("### Conclusión y Cierre de Orden")
-            causa_raiz = st.text_area("Causa Raíz Identificada *", value=falla.get("causaRaiz", ""), disabled=is_closed)
+            causa_raiz = st.text_area("Causa Raíz Identificada *", value=falla.get("causa_raiz", ""), disabled=is_closed)
             accion = st.text_area("Acción Correctiva / Preventiva *", value=falla.get("accion", ""), disabled=is_closed)
             
             if not is_closed:
@@ -128,7 +126,7 @@ def render_falla_detalle(falla_id):
                     if not causa_raiz.strip() or not accion.strip():
                         st.error("Debe definir la causa raíz y las acciones correspondientes para el cierre.")
                     else:
-                        patch = {"rca": new_rca, "causaRaiz": causa_raiz, "accion": accion, "estado": "Cerrada"}
+                        patch = {"rca": new_rca, "causa_raiz": causa_raiz, "accion": accion, "estado": "Cerrada"}
                         update_falla(falla_id, patch)
                         st.session_state.fallas = get_fallas()
                         st.success("Falla analizada y archivada correctamente.")
