@@ -63,7 +63,7 @@ def construir_agenda_del_dia():
         tareas.append({
             "prioridad": 3 if vencida else 1,
             "categoria": "🗓️ Plan Preventivo",
-            "texto": f"{maquina.get('nombre', 'Máquina desconocida')} — {p.get('tarea')} "
+            "texto": f"{maquina.get('nombre', 'Máquina desconocida')} — {p.get('nombre_plan')} "
                      f"({'vencida hace ' + str(-dias) + ' día(s)' if vencida else 'vence en ' + str(dias) + ' día(s)'})",
             "alerta": vencida
         })
