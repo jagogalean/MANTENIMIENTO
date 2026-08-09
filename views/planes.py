@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import datetime, timedelta
-from database.conection import insert_plan, update_plan, delete_plan, get_planes
+from database.conection import insert_plan, update_plan, delete_plan, get_planes, insert_plan_ejecucion, get_plan_ejecuciones
 
 
 def render_planes():
@@ -81,11 +81,18 @@ def render_planes():
         with col_a:
             if st.button("✅ Marcar Ejecutada", key=f"exec_plan_{p.get('id')}"):
                 nueva_prox = hoy + timedelta(days=p.get("frecuencia_dias", 30))
+                insert_plan_ejecucion({
+                    "plan_id": p.get("id"),
+                    "maquina_id": p.get("maquina_id"),
+                    "fecha_programada": p.get("proxima_ejecucion"),
+                    "fecha_realizada": hoy.strftime("%Y-%m-%d")
+                })
                 update_plan(p.get("id"), {
                     "ultima_ejecucion": hoy.strftime("%Y-%m-%d"),
                     "proxima_ejecucion": nueva_prox.strftime("%Y-%m-%d")
                 })
                 st.session_state.planes = get_planes()
+                st.session_state.plan_ejecuciones = get_plan_ejecuciones()
                 st.rerun()
             if st.button("🗑️ Eliminar", key=f"del_plan_{p.get('id')}"):
                 delete_plan(p.get("id"))
