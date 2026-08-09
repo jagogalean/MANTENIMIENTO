@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import base64
+import pymupdf
 from io import BytesIO
 from datetime import datetime
 from views.dashboard import calcular_kpis_industriales
@@ -336,12 +337,15 @@ def render_reportes():
         st.session_state["_pdf_preview_bytes"] = pdf_buffer.getvalue()
 
     if st.session_state.get("_pdf_preview_bytes"):
-        pdf_b64 = base64.b64encode(st.session_state["_pdf_preview_bytes"]).decode("utf-8")
-        st.markdown(
-            f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="600" '
-            f'style="border:1px solid #2A323A; border-radius:8px;"></iframe>',
-            unsafe_allow_html=True
-        )
+        # Chrome bloquea los iframes con PDF embebido como data:URI cuando la
+        # página ya está dentro de otro iframe (como pasa en Streamlit Cloud).
+        # Por eso mostramos cada página del PDF como imagen, no como iframe.
+        doc_pdf = pymupdf.open(stream=st.session_state["_pdf_preview_bytes"], filetype="pdf")
+        for i, pagina in enumerate(doc_pdf):
+            pix = pagina.get_pixmap(dpi=150)
+            st.image(pix.tobytes("png"), use_container_width=True, caption=f"Página {i + 1} de {len(doc_pdf)}")
+        doc_pdf.close()
+
         st.download_button(
             label="⬇️ Descargar Listado_Maquinas.pdf",
             data=st.session_state["_pdf_preview_bytes"],
