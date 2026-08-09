@@ -126,7 +126,7 @@ def mostrar_vista_previa_mes(tareas, map_maquina_nombre, anio, mes):
     df = construir_dataframe_mes(tareas, map_maquina_nombre, anio, mes)
     columnas_dias = [c for c in df.columns if c.isdigit()]
     st.dataframe(
-        df.style.applymap(_colorear_celda, subset=columnas_dias),
+        df.style.map(_colorear_celda, subset=columnas_dias),
         use_container_width=True,
         hide_index=True
     )
