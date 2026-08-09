@@ -174,6 +174,15 @@ def delete_documento(documento_id: str):
     response = supabase.table("documentos_maquina").delete().eq("id", documento_id).execute()
     return response.data
 
+# ----------------- HISTORIAL DE EJECUCIONES DEL PLAN (prevista vs realizada) -----------------
+def get_plan_ejecuciones():
+    response = supabase.table("plan_ejecuciones").select("*").execute()
+    return response.data
+
+def insert_plan_ejecucion(data: dict):
+    response = supabase.table("plan_ejecuciones").insert(data).execute()
+    return response.data
+
 # ----------------- CONFIGURACIÓN DE EMPRESA (logo/nombre persistentes) -----------------
 def get_configuracion_empresa():
     response = supabase.table("configuracion_empresa").select("*").eq("id", 1).execute()
