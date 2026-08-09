@@ -144,21 +144,34 @@ def delete_tecnico(tecnico_id: str):
     response = supabase.table("tecnicos").delete().eq("id", tecnico_id).execute()
     return response.data
 
-# ----------------- CRUD PLAN DE MANTENIMIENTO PREVENTIVO -----------------
+# ----------------- CRUD PLAN PREVENTIVO (cabecera: máquina + frecuencia) -----------------
 def get_planes():
-    response = supabase.table("planes_mantenimiento").select("*").order("proxima_ejecucion", desc=False).execute()
+    response = supabase.table("planes_preventivos").select("*").order("proxima_ejecucion", desc=False).execute()
     return response.data
 
 def insert_plan(data: dict):
-    response = supabase.table("planes_mantenimiento").insert(data).execute()
+    response = supabase.table("planes_preventivos").insert(data).execute()
     return response.data
 
 def update_plan(plan_id: str, patch: dict):
-    response = supabase.table("planes_mantenimiento").update(patch).eq("id", plan_id).execute()
+    response = supabase.table("planes_preventivos").update(patch).eq("id", plan_id).execute()
     return response.data
 
 def delete_plan(plan_id: str):
-    response = supabase.table("planes_mantenimiento").delete().eq("id", plan_id).execute()
+    response = supabase.table("planes_preventivos").delete().eq("id", plan_id).execute()
+    return response.data
+
+# ----------------- CRUD ACTIVIDADES DENTRO DE UN PLAN -----------------
+def get_actividades():
+    response = supabase.table("plan_actividades").select("*").execute()
+    return response.data
+
+def insert_actividad(data: dict):
+    response = supabase.table("plan_actividades").insert(data).execute()
+    return response.data
+
+def delete_actividad(actividad_id: str):
+    response = supabase.table("plan_actividades").delete().eq("id", actividad_id).execute()
     return response.data
 
 # ----------------- CRUD DOCUMENTOS TÉCNICOS POR MÁQUINA -----------------
