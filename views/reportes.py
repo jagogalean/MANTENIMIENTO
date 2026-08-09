@@ -167,6 +167,10 @@ def construir_hojas_reporte(maquinas, fallas, ots, repuestos, terceros, planes, 
     inventario = pd.DataFrame(inventario_rows if inventario_rows else [{"Info": "Sin repuestos cargados"}])
 
     hoy = datetime.now().date()
+    actividades_por_plan = {}
+    for a in st.session_state.get("plan_actividades", []):
+        actividades_por_plan.setdefault(a.get("plan_id"), []).append(a.get("actividad"))
+
     plan_rows = []
     for p in planes:
         try:
@@ -176,7 +180,9 @@ def construir_hojas_reporte(maquinas, fallas, ots, repuestos, terceros, planes, 
             dias = None
         plan_rows.append({
             "Máquina": map_maquina.get(p.get("maquina_id"), "Desconocida"),
-            "Tarea": p.get("tarea"),
+            "Plan": p.get("nombre_plan"),
+            "Actividades": "; ".join(actividades_por_plan.get(p.get("id"), [])) or "—",
+            "Frecuencia (días)": p.get("frecuencia_dias"),
             "Próxima Ejecución": p.get("proxima_ejecucion"),
             "Días Restantes": dias
         })
