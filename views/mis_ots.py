@@ -1,6 +1,22 @@
 import streamlit as st
 from datetime import datetime
-from database.conection import update_ot, get_ots, update_repuesto, get_repuestos, insert_ot_repuesto
+from database.conection import insert_ot, update_ot, get_ots, update_repuesto, get_repuestos, insert_ot_repuesto
+
+
+def generar_codigo_ot(ots):
+    """Genera el siguiente código consecutivo del año en curso. Ej: OT-2026-0007"""
+    year = datetime.now().year
+    prefijo = f"OT-{year}-"
+    consecutivos = []
+    for o in ots:
+        cod = o.get("codigo", "") or ""
+        if cod.startswith(prefijo):
+            try:
+                consecutivos.append(int(cod.replace(prefijo, "")))
+            except ValueError:
+                pass
+    siguiente = max(consecutivos) + 1 if consecutivos else 1
+    return f"{prefijo}{siguiente:04d}"
 
 
 def render_mis_ots(usuario):
@@ -14,6 +30,53 @@ def render_mis_ots(usuario):
     maquinas = st.session_state.get("maquinas", [])
     map_maquina = {m["id"]: m["nombre"] for m in maquinas}
     repuestos = st.session_state.get("repuestos", [])
+    ots = st.session_state.get("ots", [])
+
+    # --- REPORTAR UNA FALLA / CREAR OT CORRECTIVA ---
+    # El técnico solo puede crear correctivos: los preventivos y predictivos
+    # nacen del Plan Preventivo o los asigna el coordinador, no el técnico.
+    with st.expander("🆕 Reportar Falla / Crear OT Correctiva"):
+        if not maquinas:
+            st.warning("Todavía no hay máquinas registradas.")
+        else:
+            with st.form("form_correctivo_tecnico", clear_on_submit=True):
+                dict_maquinas = {m["nombre"]: m["id"] for m in maquinas}
+                maquina_sel = st.selectbox("Máquina", options=list(dict_maquinas.keys()))
+                descripcion = st.text_area("Descripción del problema / trabajo realizado")
+
+                c1, c2 = st.columns(2)
+                fecha_hoy = c1.date_input("Fecha", value=datetime.now().date())
+                hora_inicio = c2.time_input("Hora de inicio", value=datetime.now().time())
+
+                horas_paro = st.number_input("Horas de Paro (si la máquina se detuvo)", min_value=0.0, step=0.5)
+
+                submit = st.form_submit_button("Crear OT Correctiva")
+                if submit:
+                    if not descripcion.strip():
+                        st.error("❌ Describí el problema antes de guardar.")
+                    else:
+                        codigo_generado = generar_codigo_ot(ots)
+                        fecha_inicio_dt = datetime.combine(fecha_hoy, hora_inicio)
+                        nueva_ot = {
+                            "codigo": codigo_generado,
+                            "maquina_id": dict_maquinas[maquina_sel],
+                            "tipo_mantenimiento": "Correctivo",
+                            "descripcion": descripcion,
+                            "estado": "En Ejecucion",
+                            "fecha_inicio": fecha_inicio_dt.isoformat(),
+                            "fecha_fin": None,
+                            "horas_paro": horas_paro,
+                            "tecnico_id": tecnico_id,
+                            "costo_mano_obra": 0,
+                            "requiere_permiso_trabajo": False,
+                            "permiso_trabajo_emitido": False
+                        }
+                        insert_ot(nueva_ot)
+                        st.session_state.ots = get_ots()
+                        st.success(f"✅ OT {codigo_generado} creada y asignada a vos.")
+                        st.rerun()
+
+    st.markdown("---")
 
     mis_ots = [o for o in st.session_state.get("ots", []) if o.get("tecnico_id") == tecnico_id]
 
@@ -48,6 +111,14 @@ def render_mis_ots(usuario):
             key=f"estado_{o.get('id')}"
         )
 
+        # Si la está cerrando, pedirle la fecha y hora real de fin
+        fecha_fin_dt = None
+        if nuevo_estado == "Completada":
+            c1, c2 = st.columns(2)
+            fecha_fin_sel = c1.date_input("Fecha de cierre", value=datetime.now().date(), key=f"fecha_fin_{o.get('id')}")
+            hora_fin_sel = c2.time_input("Hora de fin", value=datetime.now().time(), key=f"hora_fin_{o.get('id')}")
+            fecha_fin_dt = datetime.combine(fecha_fin_sel, hora_fin_sel)
+
         with st.expander(f"🔩 Registrar repuestos usados en {o.get('codigo')}"):
             if repuestos:
                 dict_repuestos = {r["nombre"]: r for r in repuestos}
@@ -70,7 +141,7 @@ def render_mis_ots(usuario):
         if st.button("💾 Guardar cambios de estado", key=f"save_{o.get('id')}"):
             patch = {"estado": nuevo_estado}
             if nuevo_estado == "Completada":
-                patch["fecha_fin"] = datetime.now().isoformat()
+                patch["fecha_fin"] = fecha_fin_dt.isoformat()
             update_ot(o.get("id"), patch)
             st.session_state.ots = get_ots()
             st.success(f"✅ {o.get('codigo')} actualizada a '{nuevo_estado}'.")
