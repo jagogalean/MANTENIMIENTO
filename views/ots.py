@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import datetime
-from database.conection import insert_ot, get_ots, update_repuesto, get_repuestos, insert_ot_repuesto
+from database.conection import insert_ot, update_ot, get_ots, update_repuesto, get_repuestos, insert_ot_repuesto
 
 
 def generar_codigo_ot(ots):
@@ -90,7 +90,7 @@ def render_ots():
             horas_paro = st.number_input("Horas de Paro (Afectación a Disponibilidad)", min_value=0.0, step=0.5)
             dict_tecnicos = {t["nombre"]: t["id"] for t in tecnicos}
             tecnico_sel = st.selectbox("Técnico Asignado", options=["Sin asignar"] + list(dict_tecnicos.keys()))
-            costo_mano_obra = st.number_input("Costo de Mano de Obra ($)", min_value=0.0, step=1.0)
+            costo_mano_obra = st.number_input("Costo de Mano de Obra (Gs.)", min_value=0, step=1000)
 
         descripcion = st.text_area("Descripción del Trabajo / Alcance")
 
@@ -150,6 +150,89 @@ def render_ots():
                     if requiere_permiso and not permiso_emitido:
                         st.warning("⚠️ Recordá emitir y firmar el Permiso de Trabajo antes de iniciar la tarea en campo.")
                     st.rerun()
+
+    # --- MODIFICAR OT EXISTENTE (cambiar estado, asignar repuestos, cerrar) ---
+    st.markdown("---")
+    st.subheader("✏️ Modificar OT Existente")
+
+    if not ots:
+        st.caption("Todavía no hay OTs creadas para modificar.")
+    else:
+        map_m_nombre = {m["id"]: m["nombre"] for m in maquinas}
+        dict_ots = {f"{o.get('codigo')} — {map_m_nombre.get(o.get('maquina_id'), '?')} ({o.get('estado')})": o for o in ots}
+        ot_sel_key = st.selectbox("Seleccionar OT", options=list(dict_ots.keys()))
+        ot_actual = dict_ots[ot_sel_key]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            estados = ["Pendiente", "En Ejecucion", "Completada"]
+            nuevo_estado = st.selectbox(
+                "Estado", estados,
+                index=estados.index(ot_actual.get("estado")) if ot_actual.get("estado") in estados else 0,
+                key=f"edit_estado_{ot_actual.get('id')}"
+            )
+            dict_tecnicos_edit = {t["nombre"]: t["id"] for t in tecnicos}
+            nombre_tec_actual = next((n for n, i in dict_tecnicos_edit.items() if i == ot_actual.get("tecnico_id")), "Sin asignar")
+            opciones_tec = ["Sin asignar"] + list(dict_tecnicos_edit.keys())
+            tecnico_edit_sel = st.selectbox(
+                "Técnico Asignado", opciones_tec,
+                index=opciones_tec.index(nombre_tec_actual) if nombre_tec_actual in opciones_tec else 0,
+                key=f"edit_tec_{ot_actual.get('id')}"
+            )
+        with col2:
+            nuevo_costo_mo = st.number_input(
+                "Costo de Mano de Obra (Gs.)", min_value=0, step=1000,
+                value=int(ot_actual.get("costo_mano_obra", 0) or 0),
+                key=f"edit_costo_{ot_actual.get('id')}"
+            )
+            if ot_actual.get("requiere_permiso_trabajo"):
+                permiso_emitido_edit = st.checkbox(
+                    "✅ Permiso de trabajo emitido y firmado",
+                    value=bool(ot_actual.get("permiso_trabajo_emitido")),
+                    key=f"edit_permiso_{ot_actual.get('id')}"
+                )
+            else:
+                permiso_emitido_edit = ot_actual.get("permiso_trabajo_emitido", False)
+
+        # Agregar repuestos consumidos a esta OT ya existente (esto es lo que faltaba)
+        with st.expander(f"🔩 Agregar repuestos usados en {ot_actual.get('codigo')}"):
+            if repuestos:
+                dict_rep_edit = {r["nombre"]: r for r in repuestos}
+                c1, c2, c3 = st.columns([0.5, 0.25, 0.25])
+                rep_sel_edit = c1.selectbox("Repuesto", list(dict_rep_edit.keys()), key=f"edit_rep_sel_{ot_actual.get('id')}")
+                cant_sel_edit = c2.number_input("Cantidad", min_value=1, step=1, key=f"edit_rep_cant_{ot_actual.get('id')}")
+                c3.write("")
+                c3.write("")
+                if c3.button("➕ Registrar consumo", key=f"edit_rep_btn_{ot_actual.get('id')}"):
+                    rep = dict_rep_edit[rep_sel_edit]
+                    if cant_sel_edit > rep.get("stock_actual", 0):
+                        st.error(f"❌ Stock insuficiente. Disponible: {rep.get('stock_actual', 0)}.")
+                    else:
+                        update_repuesto(rep["id"], {"stock_actual": rep["stock_actual"] - cant_sel_edit})
+                        insert_ot_repuesto({
+                            "ot_id": ot_actual.get("id"),
+                            "repuesto_id": rep["id"],
+                            "cantidad_usada": cant_sel_edit
+                        })
+                        st.session_state.repuestos = get_repuestos()
+                        st.success(f"✅ Se descontaron {cant_sel_edit} unidad(es) de '{rep['nombre']}' del stock.")
+                        st.rerun()
+            else:
+                st.caption("No hay repuestos cargados en el inventario.")
+
+        if st.button("💾 Guardar Cambios en la OT", key=f"edit_save_{ot_actual.get('id')}"):
+            patch = {
+                "estado": nuevo_estado,
+                "tecnico_id": dict_tecnicos_edit.get(tecnico_edit_sel) if tecnico_edit_sel != "Sin asignar" else None,
+                "costo_mano_obra": nuevo_costo_mo,
+                "permiso_trabajo_emitido": permiso_emitido_edit
+            }
+            if nuevo_estado == "Completada" and not ot_actual.get("fecha_fin"):
+                patch["fecha_fin"] = datetime.now().isoformat()
+            update_ot(ot_actual.get("id"), patch)
+            st.session_state.ots = get_ots()
+            st.success(f"✅ {ot_actual.get('codigo')} actualizada correctamente.")
+            st.rerun()
 
     # --- HISTORIAL / TABLA DE OTS ---
     st.markdown("---")
