@@ -30,6 +30,10 @@ def delete_maquina(maquina_id: str):
     response = supabase.table("maquinas").delete().eq("id", maquina_id).execute()
     return response.data
 
+def update_maquina(maquina_id: str, patch: dict):
+    response = supabase.table("maquinas").update(patch).eq("id", maquina_id).execute()
+    return response.data
+
 # ----------------- CRUD FALLAS -----------------
 def get_fallas():
     response = supabase.table("fallas").select("*").order("id", desc=True).execute()
@@ -142,6 +146,10 @@ def insert_tecnico(data: dict):
 
 def delete_tecnico(tecnico_id: str):
     response = supabase.table("tecnicos").delete().eq("id", tecnico_id).execute()
+    return response.data
+
+def update_tecnico(tecnico_id: str, patch: dict):
+    response = supabase.table("tecnicos").update(patch).eq("id", tecnico_id).execute()
     return response.data
 
 # ----------------- CRUD PLAN PREVENTIVO (cabecera: máquina + frecuencia) -----------------
