@@ -150,6 +150,15 @@ if rol == "tecnico" and usuario.get("tecnico_id"):
         if o.get("tecnico_id") == usuario.get("tecnico_id") and o.get("estado") != "Completada"
     ])
 
+backlog_sin_asignar = len([
+    o for o in st.session_state.ots
+    if o.get("tecnico_id") is None and o.get("estado") != "Completada"
+])
+ots_bloqueadas = len([o for o in st.session_state.ots if o.get("estado") == "Bloqueada"])
+
+if rol == "tecnico":
+    mis_ots_pendientes += backlog_sin_asignar
+
 # --- LECTURA DE QR: si la URL trae ?maquina_id=X&vista=checklist, saltar directo ---
 query_params = st.query_params
 if "maquina_id" in query_params:
@@ -179,9 +188,12 @@ with st.sidebar:
     lbl_planes = f"🚨 Plan Preventivo ({planes_vencidos})" if planes_vencidos > 0 else "🗓️ Plan Preventivo"
     lbl_mis_ots = f"🚨 Mis OTs ({mis_ots_pendientes})" if mis_ots_pendientes > 0 else "👷 Mis OTs"
 
+    alertas_ot = backlog_sin_asignar + ots_bloqueadas
+    lbl_ots = f"🚨 Órdenes de Trabajo ({alertas_ot})" if alertas_ot > 0 else "🛠️ Órdenes de Trabajo"
+
     # Menú distinto según el rol del usuario logueado
     if rol == "admin":
-        opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", "🛠️ Órdenes de Trabajo", lbl_repuestos,
+        opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
                           lbl_fallas, "Recepción / Entrega", lbl_terceros, lbl_planes, "📅 Calendario Preventivo",
                           "👷 Técnicos", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
