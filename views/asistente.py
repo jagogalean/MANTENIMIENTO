@@ -36,6 +36,28 @@ def construir_agenda_del_dia():
         maquina = map_maquina.get(o.get("maquina_id"), {})
         dias_abierta = _dias_desde(o.get("fecha_inicio"))
 
+        # Backlog sin asignar: aparte, con prioridad alta si lleva 2+ días sin que nadie la tome
+        if o.get("tecnico_id") is None:
+            prioridad_backlog = 2 if (dias_abierta is not None and dias_abierta >= 2) else 1
+            tareas.append({
+                "prioridad": prioridad_backlog,
+                "categoria": "🗂️ Backlog sin asignar",
+                "texto": f"{o.get('codigo')} — {maquina.get('nombre', 'Máquina desconocida')} "
+                         f"(cargada hace {dias_abierta if dias_abierta is not None else '?'} día(s), nadie la tomó todavía)",
+                "alerta": dias_abierta is not None and dias_abierta >= 2
+            })
+            continue
+
+        # OT bloqueada: necesita que el coordinador resuelva el motivo (falta repuesto, etc.)
+        if o.get("estado") == "Bloqueada":
+            tareas.append({
+                "prioridad": 3,
+                "categoria": "🚧 OT Bloqueada",
+                "texto": f"{o.get('codigo')} — {maquina.get('nombre', 'Máquina desconocida')}: {o.get('motivo_bloqueo') or 'sin motivo especificado'}",
+                "alerta": True
+            })
+            continue
+
         prioridad = 0
         if maquina.get("criticidad") == "A":
             prioridad += 2
