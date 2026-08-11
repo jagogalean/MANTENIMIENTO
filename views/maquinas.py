@@ -2,7 +2,7 @@ import streamlit as st
 import qrcode
 import json
 from io import BytesIO
-from database.conection import insert_maquina, delete_maquina, get_maquinas, insert_documento, delete_documento, get_documentos, insert_plan, get_planes, insert_actividad, get_actividades
+from database.conection import insert_maquina, delete_maquina, get_maquinas, update_maquina, insert_documento, delete_documento, get_documentos, insert_plan, get_planes, insert_actividad, get_actividades
 from datetime import datetime, timedelta
 
 CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
@@ -87,6 +87,10 @@ def render_maquinas():
             codigo = st.text_input("Código Único *", placeholder="Ej: EXT-002")
             seccion = st.text_input("Sección / Área", placeholder="Ej: Planta A - Línea 2")
             criticidad = st.selectbox("Criticidad", ["A", "B", "C"], format_func=lambda x: CRIT_LABELS[x])
+            costo_hora_parada = st.number_input(
+                "Costo por Hora de Parada (Gs.)", min_value=0, step=1000, value=0,
+                help="Lucro cesante: cuánto cuesta cada hora que esta máquina está parada."
+            )
             
             submit = st.form_submit_button("Guardar Máquina")
             if submit:
@@ -98,7 +102,8 @@ def render_maquinas():
                         "nombre": nombre,
                         "codigo": codigo,
                         "seccion": seccion,
-                        "criticidad": criticidad
+                        "criticidad": criticidad,
+                        "costo_hora_parada": costo_hora_parada
                     }
                     insert_maquina(payload)
                     st.session_state.maquinas = get_maquinas()
@@ -113,11 +118,12 @@ def render_maquinas():
         for m in st.session_state.maquinas:
             col_info, col_action = st.columns([0.85, 0.15])
             with col_info:
+                costo_parada_fmt = f"{m.get('costo_hora_parada', 0) or 0:,.0f}".replace(",", ".")
                 st.markdown(f"""
                 <div class='industrial-panel'>
                     <strong>{m.get('nombre')}</strong> <small style='color:#38BDF8;'>[{m.get('codigo')}]</small> — 
                     <small style='color:#7C8894;'>{m.get('seccion') or 'sin sección'}</small><br>
-                    <span>Criticidad: {CRIT_LABELS.get(m.get('criticidad'), m.get('criticidad'))}</span>
+                    <span>Criticidad: {CRIT_LABELS.get(m.get('criticidad'), m.get('criticidad'))} · Costo Hora de Parada: Gs. {costo_parada_fmt}</span>
                 </div>
                 """, unsafe_allow_html=True)
             with col_action:
@@ -125,6 +131,18 @@ def render_maquinas():
                 if st.button("🗑️ Eliminar", key=f"del_m_{m.get('id')}"):
                     delete_maquina(m.get('id'))
                     st.session_state.maquinas = get_maquinas()
+                    st.rerun()
+
+            with st.expander(f"💰 Editar costo de hora de parada de {m.get('nombre')}"):
+                nuevo_costo_parada = st.number_input(
+                    "Costo por Hora de Parada (Gs.)", min_value=0, step=1000,
+                    value=int(m.get("costo_hora_parada", 0) or 0),
+                    key=f"costo_parada_{m.get('id')}"
+                )
+                if st.button("💾 Guardar", key=f"save_costo_parada_{m.get('id')}"):
+                    update_maquina(m.get("id"), {"costo_hora_parada": nuevo_costo_parada})
+                    st.session_state.maquinas = get_maquinas()
+                    st.success("✅ Costo actualizado.")
                     st.rerun()
 
             # --- DOCUMENTACIÓN TÉCNICA (manuales, planos, fichas) ---
