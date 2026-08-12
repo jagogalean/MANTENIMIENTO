@@ -86,6 +86,13 @@ def update_ot(ot_id: str, patch: dict):
     response = supabase.table("ots").update(patch).eq("id", ot_id).execute()
     return response.data
 
+def delete_ot(ot_id: str):
+    """NUEVO: permite borrar una OT definitivamente. Pensado para uso exclusivo
+    de administradores (el control de quién puede llamar a esto se hace en la vista,
+    con database.permisos.es_admin)."""
+    response = supabase.table("ots").delete().eq("id", ot_id).execute()
+    return response.data
+
 # ----------------- CRUD REPUESTOS e INVENTARIO -----------------
 def get_repuestos():
     response = supabase.table("repuestos").select("*").order("id", desc=True).execute()
@@ -213,3 +220,114 @@ def guardar_configuracion_empresa(nombre_empresa: str, logo_base64: str):
     payload = {"id": 1, "nombre_empresa": nombre_empresa, "logo_base64": logo_base64}
     response = supabase.table("configuracion_empresa").upsert(payload).execute()
     return response.data
+
+
+# ============================================================
+# ============ NUEVO: LECTURAS CON CACHÉ (RENDIMIENTO) ========
+# ============================================================
+# Catálogos que casi no cambian -> caché larga (5 minutos).
+# Se usan en pantallas de alta concurrencia (Mis OTs, OTs) para no golpear
+# Supabase en cada click de cada usuario. Cuando alguien edita un catálogo
+# desde su propia vista (Máquinas, Técnicos), esa vista sigue refrescando
+# st.session_state como siempre; esta caché igual vence sola a los 5 minutos.
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_maquinas_cached():
+    return get_maquinas()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_tecnicos_cached():
+    return get_tecnicos()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_terceros_cached():
+    return get_terceros()
+
+
+# Datos transaccionales (OTs, Stock) -> caché corta (15 segundos).
+# Esto evita que dos técnicos vean el backlog "viejo" durante mucho tiempo,
+# sin golpear la base de datos en cada rerender de Streamlit. Después de
+# cualquier escritura (insert/update/delete), hay que llamar a .clear()
+# para que el propio usuario vea el cambio al instante.
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_ots_cached():
+    return get_ots()
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_repuestos_cached():
+    return get_repuestos()
+
+
+# ============================================================
+# ============ NUEVO: PAGINACIÓN SERVER-SIDE (RENDIMIENTO) ====
+# ============================================================
+def get_ots_paginado(pagina: int = 1, tamanio: int = 25, estado: str | None = None):
+    """
+    Trae solo una "página" de OTs desde Supabase (no toda la tabla), usando
+    .range() del lado del servidor. Devuelve (filas_de_la_pagina, total_de_filas).
+
+    Se usa para el listado/historial (que crece indefinidamente); NO se usa
+    para el Dashboard ni el Asistente del Día, que necesitan ver el 100%
+    de los datos para calcular KPIs y armar la agenda.
+    """
+    desde = (pagina - 1) * tamanio
+    hasta = desde + tamanio - 1
+
+    query = supabase.table("ots").select("*", count="exact").order("id", desc=True)
+    if estado:
+        query = query.eq("estado", estado)
+
+    response = query.range(desde, hasta).execute()
+    return response.data, (response.count or 0)
+
+
+# ============================================================
+# ============ NUEVO: RPC TRANSACCIONALES (INTEGRIDAD) ========
+# ============================================================
+# Estas dos funciones llaman a procedimientos SQL creados en Supabase
+# (ver archivo mejoras_cmms.sql) que hacen el chequeo + la escritura en
+# una sola transacción atómica, eliminando la condición de carrera que
+# existía al hacer "leer stock -> comparar en Python -> escribir" en dos
+# pasos separados.
+
+def consumir_repuesto_seguro(ot_id, repuesto_id, cantidad):
+    """
+    Descuenta stock de un repuesto y registra su consumo en una OT,
+    todo en una sola transacción SQL (función consumir_repuesto en Supabase).
+
+    Lanza ValueError("STOCK_INSUFICIENTE") si no hay stock suficiente
+    en el momento exacto de guardar (por ejemplo, si otro técnico lo
+    consumió un segundo antes).
+    """
+    try:
+        response = supabase.rpc("consumir_repuesto", {
+            "p_ot_id": ot_id,
+            "p_repuesto_id": repuesto_id,
+            "p_cantidad": cantidad
+        }).execute()
+        return response.data
+    except Exception as e:
+        if "STOCK_INSUFICIENTE" in str(e):
+            raise ValueError("STOCK_INSUFICIENTE")
+        raise
+
+
+def tomar_ot_backlog_seguro(ot_id, tecnico_id):
+    """
+    Asigna una OT del backlog compartido a un técnico, pero solo si sigue
+    sin asignar en ese instante (función tomar_ot_backlog en Supabase).
+
+    Lanza ValueError("OT_YA_TOMADA") si otro técnico ya se la asignó
+    un segundo antes.
+    """
+    try:
+        response = supabase.rpc("tomar_ot_backlog", {
+            "p_ot_id": ot_id,
+            "p_tecnico_id": tecnico_id
+        }).execute()
+        return response.data
+    except Exception as e:
+        if "OT_YA_TOMADA" in str(e):
+            raise ValueError("OT_YA_TOMADA")
+        raise
