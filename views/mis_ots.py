@@ -1,6 +1,10 @@
 import streamlit as st
 from datetime import datetime
-from database.conection import insert_ot, update_ot, get_ots, update_repuesto, get_repuestos, insert_ot_repuesto
+from database.conection import (
+    insert_ot, update_ot,
+    get_ots_cached, get_repuestos_cached,
+    consumir_repuesto_seguro, tomar_ot_backlog_seguro
+)
 
 ESTADOS_OT = ["Pendiente", "En Ejecucion", "Bloqueada", "Completada"]
 
@@ -27,6 +31,20 @@ def _dias_abierta(fecha_inicio_iso):
         return (datetime.now(fecha.tzinfo) - fecha).days
     except (TypeError, ValueError, AttributeError):
         return None
+
+
+def _refrescar_ots():
+    """NUEVO: limpia la caché corta de OTs y refresca también session_state,
+    para que este usuario vea el cambio al instante Y el resto de los usuarios
+    lo vea apenas venza la caché (máximo 15 segundos)."""
+    get_ots_cached.clear()
+    st.session_state.ots = get_ots_cached()
+
+
+def _refrescar_repuestos():
+    """Igual que _refrescar_ots pero para el stock de repuestos."""
+    get_repuestos_cached.clear()
+    st.session_state.repuestos = get_repuestos_cached()
 
 
 def _render_form_estado_y_cierre(o, repuestos, key_prefix):
@@ -62,14 +80,18 @@ def _render_form_estado_y_cierre(o, repuestos, key_prefix):
             cant_sel = c2.number_input("Cantidad", min_value=1, step=1, key=f"{key_prefix}_rep_cant_{o.get('id')}")
             if st.button("➕ Registrar consumo", key=f"{key_prefix}_rep_btn_{o.get('id')}"):
                 rep = dict_repuestos[r_sel]
-                if cant_sel > rep.get("stock_actual", 0):
-                    st.error(f"❌ Stock insuficiente. Disponible: {rep.get('stock_actual', 0)}.")
-                else:
-                    update_repuesto(rep["id"], {"stock_actual": rep["stock_actual"] - cant_sel})
-                    insert_ot_repuesto({"ot_id": o.get("id"), "repuesto_id": rep["id"], "cantidad_usada": cant_sel})
-                    st.session_state.repuestos = get_repuestos()
+                # NUEVO: el descuento de stock + registro de consumo ahora se hace
+                # con una función RPC transaccional en Supabase (consumir_repuesto),
+                # que valida el stock y descuenta en un solo paso atómico. Esto evita
+                # que dos técnicos consuman el mismo repuesto al mismo tiempo y el
+                # stock quede en negativo.
+                try:
+                    consumir_repuesto_seguro(o.get("id"), rep["id"], cant_sel)
+                    _refrescar_repuestos()
                     st.success("✅ Consumo registrado y descontado del stock.")
                     st.rerun()
+                except ValueError:
+                    st.error(f"❌ Stock insuficiente para '{rep['nombre']}' (alguien más lo consumió justo antes). Actualizá y volvé a intentar.")
         else:
             st.caption("No hay repuestos cargados en el inventario.")
 
@@ -81,7 +103,7 @@ def _render_form_estado_y_cierre(o, repuestos, key_prefix):
             if nuevo_estado == "Completada":
                 patch["fecha_fin"] = fecha_fin_dt.isoformat()
             update_ot(o.get("id"), patch)
-            st.session_state.ots = get_ots()
+            _refrescar_ots()
             st.success(f"✅ {o.get('codigo')} actualizada a '{nuevo_estado}'.")
             st.rerun()
 
@@ -96,8 +118,12 @@ def render_mis_ots(usuario):
 
     maquinas = st.session_state.get("maquinas", [])
     map_maquina = {m["id"]: m["nombre"] for m in maquinas}
-    repuestos = st.session_state.get("repuestos", [])
-    todas_las_ots = st.session_state.get("ots", [])
+    # NUEVO: repuestos y OTs se leen desde funciones con caché corta (15s) en vez
+    # de depender solo de la foto que se cargó en session_state al iniciar sesión.
+    # Así, si otro técnico toma una OT del backlog o consume un repuesto, este
+    # usuario lo ve reflejado casi en tiempo real sin tener que cerrar sesión.
+    repuestos = get_repuestos_cached()
+    todas_las_ots = get_ots_cached()
 
     # --- REPORTAR UNA FALLA / CREAR OT CORRECTIVA ---
     with st.expander("🆕 Reportar Falla / Crear OT Correctiva"):
@@ -144,7 +170,7 @@ def render_mis_ots(usuario):
                             "permiso_trabajo_emitido": False
                         }
                         insert_ot(nueva_ot)
-                        st.session_state.ots = get_ots()
+                        _refrescar_ots()
                         if me_la_asigno:
                             st.success(f"✅ OT {codigo_generado} creada y asignada a vos.")
                         else:
@@ -180,9 +206,16 @@ def render_mis_ots(usuario):
                 </div>
                 """, unsafe_allow_html=True)
                 if st.button("🙋 Tomar esta OT", key=f"tomar_{o.get('id')}"):
-                    update_ot(o.get("id"), {"tecnico_id": tecnico_id, "estado": "En Ejecucion"})
-                    st.session_state.ots = get_ots()
-                    st.success(f"✅ Te asignaste la OT {o.get('codigo')}.")
+                    # NUEVO: "tomar OT" ahora usa una función RPC transaccional
+                    # (tomar_ot_backlog) que solo asigna la OT si en ese instante
+                    # sigue sin dueño. Esto evita que dos técnicos se asignen la
+                    # misma OT si tocan el botón casi al mismo tiempo.
+                    try:
+                        tomar_ot_backlog_seguro(o.get("id"), tecnico_id)
+                        _refrescar_ots()
+                        st.success(f"✅ Te asignaste la OT {o.get('codigo')}.")
+                    except ValueError:
+                        st.warning("⚠️ Justo ahora otro técnico tomó esta OT antes que vos.")
                     st.rerun()
                 st.markdown("---")
 
