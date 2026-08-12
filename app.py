@@ -20,6 +20,7 @@ from views.asistente import render_asistente
 from views.usuarios import render_usuarios
 from views.mis_ots import render_mis_ots
 from views.calendario import render_calendario
+from views.reportar_falla import render_reportar_falla  # NUEVO: vista del rol Operador
 from datetime import datetime
 
 # Configuración de página
@@ -198,6 +199,10 @@ with st.sidebar:
                           "👷 Técnicos", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
         opciones_menu = ["Panel General", "📑 Reportes"]
+    elif rol == "operador":
+        # NUEVO: rol Operador/Reportador — solo puede reportar fallas,
+        # que caen automáticamente al backlog compartido de mantenimiento.
+        opciones_menu = ["🚨 Reportar Falla"]
     else:  # tecnico
         opciones_menu = ["🧭 Asistente del Día", lbl_mis_ots, "Recepción / Entrega"]
 
@@ -223,12 +228,14 @@ if "Asistente" in opcion:
     render_asistente()
 elif "Mis OTs" in opcion:
     render_mis_ots(usuario)
+elif "Reportar Falla" in opcion:
+    render_reportar_falla(usuario)  # NUEVO: vista exclusiva del rol Operador
 elif "Panel General" in opcion:
     render_dashboard()
 elif "Máquinas" in opcion:
     render_maquinas()
 elif "Órdenes de Trabajo" in opcion:
-    render_ots()
+    render_ots(usuario)  # MODIFICADO: ahora recibe 'usuario' para el bloque de Administrador
 elif "Repuestos" in opcion:
     render_repuestos()
 elif "Fallas" in opcion:
