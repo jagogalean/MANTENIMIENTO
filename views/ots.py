@@ -1,6 +1,11 @@
 import streamlit as st
 from datetime import datetime, date, time
-from database.conection import insert_ot, update_ot, get_ots, update_repuesto, get_repuestos, insert_ot_repuesto
+from database.conection import (
+    insert_ot, update_ot, get_ots, get_repuestos,
+    get_ots_cached, get_repuestos_cached, get_ots_paginado,
+    delete_ot, consumir_repuesto_seguro
+)
+from database.permisos import es_admin
 
 
 def generar_codigo_ot(ots):
@@ -56,12 +61,29 @@ def calcular_costo_ot(tipo_ejecucion, horas_trabajadas=0, costo_hora_hombre=0, c
 ESTADOS_OT = ["Pendiente", "En Ejecucion", "Bloqueada", "Completada"]
 
 
-def render_ots():
+def _refrescar_ots():
+    """NUEVO: limpia la caché corta de OTs y refresca session_state, para que
+    este usuario vea el cambio al instante y el resto lo vea apenas venza
+    la caché (máximo 15 segundos)."""
+    get_ots_cached.clear()
+    st.session_state.ots = get_ots_cached()
+
+
+def _refrescar_repuestos():
+    get_repuestos_cached.clear()
+    st.session_state.repuestos = get_repuestos_cached()
+
+
+def render_ots(usuario):
     st.title("⚙️ Gestión de Órdenes de Trabajo (OT)")
 
     maquinas = st.session_state.get("maquinas", [])
-    ots = st.session_state.get("ots", [])
-    repuestos = st.session_state.get("repuestos", [])
+    # NUEVO: ots y repuestos se leen con caché corta (15s) en vez de depender
+    # únicamente de la foto tomada al iniciar sesión, para que esta pantalla
+    # (la más concurrida junto con Mis OTs) refleje cambios de otros usuarios
+    # casi en tiempo real.
+    ots = get_ots_cached()
+    repuestos = get_repuestos_cached()
     tecnicos = st.session_state.get("tecnicos", [])
 
     if not maquinas:
@@ -169,20 +191,26 @@ def render_ots():
                     ot_creada = insert_ot(nueva_ot)
                     ot_id = ot_creada[0]["id"] if ot_creada else None
 
+                    # NUEVO: el descuento de stock + registro de consumo por cada
+                    # repuesto del carrito ahora pasa por la función RPC
+                    # transaccional consumir_repuesto_seguro (ver Fase 1 del plan),
+                    # que valida y descuenta stock en un único paso atómico en
+                    # vez de "leer -> comparar en Python -> escribir" por separado.
+                    error_stock = False
                     for item in st.session_state.ot_carrito:
-                        rep_actual = repuestos_actuales[item["repuesto_id"]]
-                        nuevo_stock = rep_actual["stock_actual"] - item["cantidad"]
-                        update_repuesto(item["repuesto_id"], {"stock_actual": nuevo_stock})
-                        insert_ot_repuesto({
-                            "ot_id": ot_id,
-                            "repuesto_id": item["repuesto_id"],
-                            "cantidad_usada": item["cantidad"]
-                        })
+                        try:
+                            consumir_repuesto_seguro(ot_id, item["repuesto_id"], item["cantidad"])
+                        except ValueError:
+                            error_stock = True
+                            st.error(f"❌ '{item['nombre']}' se quedó sin stock suficiente justo en este instante.")
 
-                    st.session_state.ots = get_ots()
-                    st.session_state.repuestos = get_repuestos()
+                    _refrescar_ots()
+                    _refrescar_repuestos()
                     st.session_state.ot_carrito = []
-                    st.success(f"✅ Orden {codigo_generado} registrada exitosamente.")
+                    if error_stock:
+                        st.warning("⚠️ La OT se creó, pero algún repuesto no pudo descontarse por falta de stock. Revisalo en 'Modificar OT Existente'.")
+                    else:
+                        st.success(f"✅ Orden {codigo_generado} registrada exitosamente.")
                     if tecnico_sel == "Sin asignar (backlog compartido)":
                         st.info("📌 Quedó en el backlog compartido — cualquier técnico la puede tomar desde 'Mis OTs'.")
                     if requiere_permiso and not permiso_emitido:
@@ -249,18 +277,14 @@ def render_ots():
                 c3.write("")
                 if c3.button("➕ Registrar consumo", key=f"edit_rep_btn_{ot_actual.get('id')}"):
                     rep = dict_rep_edit[rep_sel_edit]
-                    if cant_sel_edit > rep.get("stock_actual", 0):
-                        st.error(f"❌ Stock insuficiente. Disponible: {rep.get('stock_actual', 0)}.")
-                    else:
-                        update_repuesto(rep["id"], {"stock_actual": rep["stock_actual"] - cant_sel_edit})
-                        insert_ot_repuesto({
-                            "ot_id": ot_actual.get("id"),
-                            "repuesto_id": rep["id"],
-                            "cantidad_usada": cant_sel_edit
-                        })
-                        st.session_state.repuestos = get_repuestos()
+                    # NUEVO: misma función RPC transaccional que en la creación de OT.
+                    try:
+                        consumir_repuesto_seguro(ot_actual.get("id"), rep["id"], cant_sel_edit)
+                        _refrescar_repuestos()
                         st.success(f"✅ Se descontaron {cant_sel_edit} unidad(es) de '{rep['nombre']}' del stock.")
                         st.rerun()
+                    except ValueError:
+                        st.error(f"❌ Stock insuficiente para '{rep['nombre']}' en este instante.")
             else:
                 st.caption("No hay repuestos cargados en el inventario.")
 
@@ -278,9 +302,39 @@ def render_ots():
                 if nuevo_estado == "Completada" and not ot_actual.get("fecha_fin"):
                     patch["fecha_fin"] = datetime.now().isoformat()
                 update_ot(ot_actual.get("id"), patch)
-                st.session_state.ots = get_ots()
+                _refrescar_ots()
                 st.success(f"✅ {ot_actual.get('codigo')} actualizada correctamente.")
                 st.rerun()
+
+        # ------------------------------------------------------------
+        # NUEVO: Bloque de Superusuario — solo visible para rol "admin".
+        # Permite forzar el cierre de una OT saltándose las validaciones
+        # normales (motivo de bloqueo, permiso de trabajo) y eliminar
+        # una OT definitivamente. Pensado para casos excepcionales
+        # (OT cargada por error, decisión gerencial de cerrar igual).
+        # ------------------------------------------------------------
+        if es_admin(usuario):
+            st.markdown("---")
+            st.markdown("##### 🛡️ Acciones de Administrador")
+            st.caption("Estas acciones ignoran las validaciones normales del flujo de OT. Usalas con criterio.")
+            col_forzar, col_borrar = st.columns(2)
+            with col_forzar:
+                if st.button("⚡ Forzar Cierre de esta OT", key=f"forzar_{ot_actual.get('id')}"):
+                    update_ot(ot_actual.get("id"), {
+                        "estado": "Completada",
+                        "fecha_fin": datetime.now().isoformat(),
+                        "motivo_bloqueo": None
+                    })
+                    _refrescar_ots()
+                    st.warning(f"⚡ {ot_actual.get('codigo')} fue cerrada por un administrador, sin pasar por las validaciones normales.")
+                    st.rerun()
+            with col_borrar:
+                confirmar_borrado = st.checkbox("Confirmo que quiero eliminar esta OT", key=f"confirmar_borrado_{ot_actual.get('id')}")
+                if st.button("🗑️ Eliminar OT Definitivamente", key=f"borrar_{ot_actual.get('id')}", disabled=not confirmar_borrado):
+                    delete_ot(ot_actual.get("id"))
+                    _refrescar_ots()
+                    st.success(f"🗑️ {ot_actual.get('codigo')} fue eliminada del sistema.")
+                    st.rerun()
 
     # --- CIERRE DE COSTOS Y LUCRO CESANTE ---
     st.markdown("---")
@@ -391,22 +445,43 @@ def render_ots():
                     patch_costo["tecnico_id"] = tecnico_id_costo
                     patch_costo["costo_mano_obra"] = resultado["costo_mano_obra"]
                 update_ot(ot_costo.get("id"), patch_costo)
-                st.session_state.ots = get_ots()
+                _refrescar_ots()
                 st.success(f"✅ Costos de {ot_costo.get('codigo')} guardados: Total Gs. {resultado['costo_total']:,.0f}".replace(",", "."))
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ No se pudo guardar el cierre de costos: {e}")
 
-    # --- HISTORIAL / TABLA DE OTS ---
+    # --- HISTORIAL / TABLA DE OTS (NUEVO: con paginación server-side) ---
     st.markdown("---")
     st.subheader("Historial de Órdenes de Trabajo")
-    if not ots:
-        st.info("No hay órdenes de trabajo registradas.")
+
+    if "hist_ot_pagina" not in st.session_state:
+        st.session_state.hist_ot_pagina = 1
+
+    TAMANIO_PAGINA = 25
+    filtro_estado = st.selectbox("Filtrar por estado", ["Todos"] + ESTADOS_OT, key="hist_ot_filtro")
+    estado_query = None if filtro_estado == "Todos" else filtro_estado
+
+    # NUEVO: en vez de traer TODAS las OTs de una vez, se pide solo la página
+    # actual directamente a Supabase con .range(). Esto evita que la tabla de
+    # historial se vuelva lenta a medida que se acumulan cientos de OTs.
+    ots_pagina, total_ots = get_ots_paginado(
+        pagina=st.session_state.hist_ot_pagina,
+        tamanio=TAMANIO_PAGINA,
+        estado=estado_query
+    )
+    total_paginas = max(1, -(-total_ots // TAMANIO_PAGINA))  # redondeo hacia arriba
+
+    if st.session_state.hist_ot_pagina > total_paginas:
+        st.session_state.hist_ot_pagina = total_paginas
+
+    if not ots_pagina:
+        st.info("No hay órdenes de trabajo registradas con este filtro.")
     else:
         tabla_ots = []
         map_m_nombre = {m["id"]: m["nombre"] for m in maquinas}
         map_tec_nombre = {t["id"]: t["nombre"] for t in tecnicos}
-        for o in ots:
+        for o in ots_pagina:
             tabla_ots.append({
                 "Código": o.get("codigo"),
                 "Máquina": map_m_nombre.get(o.get("maquina_id"), "Desconocida"),
@@ -422,3 +497,18 @@ def render_ots():
                 "Descripción": o.get("descripcion")
             })
         st.dataframe(tabla_ots, use_container_width=True)
+
+        col_prev, col_info, col_next = st.columns([0.2, 0.6, 0.2])
+        with col_prev:
+            if st.button("⬅️ Anterior", disabled=st.session_state.hist_ot_pagina <= 1, key="hist_ot_prev"):
+                st.session_state.hist_ot_pagina -= 1
+                st.rerun()
+        with col_info:
+            st.markdown(
+                f"<center>Página {st.session_state.hist_ot_pagina} de {total_paginas} · {total_ots} OT(s) en total</center>",
+                unsafe_allow_html=True
+            )
+        with col_next:
+            if st.button("Siguiente ➡️", disabled=st.session_state.hist_ot_pagina >= total_paginas, key="hist_ot_next"):
+                st.session_state.hist_ot_pagina += 1
+                st.rerun()
