@@ -1,7 +1,8 @@
 import streamlit as st
 from database.conection import get_usuarios, insert_usuario, delete_usuario
 
-ROLES = ["admin", "gerente", "tecnico"]
+# NUEVO: se agregó "operador" a la lista de roles disponibles.
+ROLES = ["admin", "gerente", "tecnico", "operador"]
 
 
 def render_usuarios():
