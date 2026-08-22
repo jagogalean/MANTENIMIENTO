@@ -21,6 +21,9 @@ from views.usuarios import render_usuarios
 from views.mis_ots import render_mis_ots
 from views.calendario import render_calendario
 from views.reportar_falla import render_reportar_falla  # NUEVO: vista del rol Operador
+from views.presupuesto import render_presupuesto  # NUEVO: presupuesto vs. gasto real
+from views.vista_publica import render_vista_publica  # NUEVO: ficha + reporte público (QR, sin login)
+from views.solicitudes_falla import render_solicitudes_falla  # NUEVO: bandeja de reportes QR (admin)
 from datetime import datetime
 
 # Configuración de página
@@ -61,6 +64,23 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
+
+# ============================================================
+# NUEVO: DESVÍO PÚBLICO (QR sin login) — va ANTES del login a propósito.
+# Si la URL trae ?equipo=X (por ejemplo, alguien escaneó el QR pegado en
+# una máquina), se muestra la ficha pública + formulario de reporte, sin
+# pasar por la pantalla de inicio de sesión. Si la persona toca el botón
+# "Acceso Administrativo", la bandera forzar_login_admin hace que se
+# ignore el parámetro y se muestre el login normal.
+# ============================================================
+equipo_qr_id = st.query_params.get("equipo")
+if equipo_qr_id and not st.session_state.get("forzar_login_admin"):
+    try:
+        equipo_id_normalizado = int(equipo_qr_id)
+    except (TypeError, ValueError):
+        equipo_id_normalizado = equipo_qr_id
+    render_vista_publica(equipo_id_normalizado)
+    st.stop()
 
 # ============================================================
 # LOGIN (Supabase Auth) — nada de lo de abajo corre sin sesión
@@ -144,6 +164,13 @@ def _dias_plan(fecha_str):
 
 planes_vencidos = len([p for p in st.session_state.planes if _dias_plan(p.get("proxima_ejecucion")) is not None and _dias_plan(p.get("proxima_ejecucion")) <= 7])
 
+# NUEVO: contador de reportes públicos (QR) pendientes de revisar, solo para admin
+if rol == "admin":
+    from views.solicitudes_falla import get_solicitudes_falla
+    st.session_state.solicitudes_qr_pendientes = len([
+        s for s in get_solicitudes_falla() if s.get("estado") == "Pendiente"
+    ])
+
 mis_ots_pendientes = 0
 if rol == "tecnico" and usuario.get("tecnico_id"):
     mis_ots_pendientes = len([
@@ -192,13 +219,17 @@ with st.sidebar:
     alertas_ot = backlog_sin_asignar + ots_bloqueadas
     lbl_ots = f"🚨 Órdenes de Trabajo ({alertas_ot})" if alertas_ot > 0 else "🛠️ Órdenes de Trabajo"
 
+    # NUEVO: badge de reportes públicos (QR) pendientes de revisar
+    solicitudes_qr_pendientes = st.session_state.get("solicitudes_qr_pendientes", 0)
+    lbl_solicitudes_qr = f"🚨 Reportes QR ({solicitudes_qr_pendientes})" if solicitudes_qr_pendientes > 0 else "📨 Reportes QR"
+
     # Menú distinto según el rol del usuario logueado
     if rol == "admin":
         opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
-                          lbl_fallas, "Recepción / Entrega", lbl_terceros, lbl_planes, "📅 Calendario Preventivo",
-                          "👷 Técnicos", "📑 Reportes", "🔐 Usuarios"]
+                          lbl_fallas, lbl_solicitudes_qr, "Recepción / Entrega", lbl_terceros, lbl_planes,
+                          "📅 Calendario Preventivo", "👷 Técnicos", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
-        opciones_menu = ["Panel General", "📑 Reportes"]
+        opciones_menu = ["Panel General", "💰 Presupuesto", "📑 Reportes"]
     elif rol == "operador":
         # NUEVO: rol Operador/Reportador — solo puede reportar fallas,
         # que caen automáticamente al backlog compartido de mantenimiento.
@@ -230,6 +261,10 @@ elif "Mis OTs" in opcion:
     render_mis_ots(usuario)
 elif "Reportar Falla" in opcion:
     render_reportar_falla(usuario)  # NUEVO: vista exclusiva del rol Operador
+elif "Presupuesto" in opcion:
+    render_presupuesto(usuario)  # NUEVO: presupuesto vs. gasto real
+elif "Reportes QR" in opcion:
+    render_solicitudes_falla()  # NUEVO: bandeja de reportes públicos (QR)
 elif "Panel General" in opcion:
     render_dashboard()
 elif "Máquinas" in opcion:
