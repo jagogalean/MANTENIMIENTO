@@ -331,3 +331,28 @@ def tomar_ot_backlog_seguro(ot_id, tecnico_id):
         if "OT_YA_TOMADA" in str(e):
             raise ValueError("OT_YA_TOMADA")
         raise
+
+
+# ============================================================
+# ============ NUEVO: PRESUPUESTO DE MANTENIMIENTO ============
+# ============================================================
+def get_presupuestos():
+    response = supabase.table("presupuestos").select("*").order("periodo", desc=True).execute()
+    return response.data
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_presupuestos_cached():
+    return get_presupuestos()
+
+def guardar_presupuesto(periodo: str, categoria: str, monto: float):
+    """
+    Crea o actualiza el presupuesto de un mes + categoría (upsert: si ya
+    existe una fila para ese mes y esa categoría, la actualiza en vez de
+    duplicarla, gracias al 'unique (periodo, categoria)' de la tabla).
+
+    periodo: string 'YYYY-MM-01' (siempre el día 1 del mes)
+    categoria: 'total' | 'mano_obra' | 'repuestos' | 'terceros'
+    """
+    payload = {"periodo": periodo, "categoria": categoria, "monto": monto}
+    response = supabase.table("presupuestos").upsert(payload, on_conflict="periodo,categoria").execute()
+    return response.data
