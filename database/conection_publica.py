@@ -52,3 +52,19 @@ def insertar_solicitud_falla(data: dict):
     data["estado"] = "Pendiente"
     response = supabase_publico.table("solicitudes_falla").insert(data).execute()
     return response.data
+
+
+def get_info_debug():
+    """
+    TEMPORAL — solo para depurar el error de RLS. Devuelve la URL y una
+    versión enmascarada de la anon key que está usando ESTA app en este
+    momento, para comparar contra lo que ves en Supabase -> Settings -> API.
+    No expone la clave completa.
+    """
+    url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
+    anon_key = st.secrets.get("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_ANON_KEY", ""))
+    if len(anon_key) > 20:
+        key_enmascarada = f"{anon_key[:8]}...{anon_key[-6:]} (largo: {len(anon_key)})"
+    else:
+        key_enmascarada = f"⚠️ MUY CORTA O VACÍA: '{anon_key}'"
+    return {"url": url, "anon_key_enmascarada": key_enmascarada}
