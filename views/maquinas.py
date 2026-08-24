@@ -83,7 +83,8 @@ def render_maquinas():
     # Formulario desplegable mediante checkbox de Streamlit
     if st.checkbox("+ Nueva Máquina"):
         with st.form("form_nueva_maquina", clear_on_submit=True):
-            nombre = st.text_input("Nombre / Tag *", placeholder="Ej: Extrusora 02")
+            tag = st.text_input("Tag *", placeholder="Ej: 50000000", help="El número que va pegado físicamente en la máquina (el que lee el QR).")
+            nombre = st.text_input("Nombre *", placeholder="Ej: Extrusora 02")
             codigo = st.text_input("Código Único *", placeholder="Ej: EXT-002")
             seccion = st.text_input("Sección / Área", placeholder="Ej: Planta A - Línea 2")
             criticidad = st.selectbox("Criticidad", ["A", "B", "C"], format_func=lambda x: CRIT_LABELS[x])
@@ -99,6 +100,7 @@ def render_maquinas():
                 else:
                     # El ID no se envía en el payload ya que Supabase lo genera automáticamente como BIGINT
                     payload = {
+                        "tag": tag.strip() or None,
                         "nombre": nombre,
                         "codigo": codigo,
                         "seccion": seccion,
@@ -119,9 +121,10 @@ def render_maquinas():
             col_info, col_action = st.columns([0.85, 0.15])
             with col_info:
                 costo_parada_fmt = f"{m.get('costo_hora_parada', 0) or 0:,.0f}".replace(",", ".")
+                tag_txt = f" <small style='color:#F2A93B;'>Tag: {m.get('tag')}</small>" if m.get("tag") else ""
                 st.markdown(f"""
                 <div class='industrial-panel'>
-                    <strong>{m.get('nombre')}</strong> <small style='color:#38BDF8;'>[{m.get('codigo')}]</small> — 
+                    <strong>{m.get('nombre')}</strong> <small style='color:#38BDF8;'>[{m.get('codigo')}]</small>{tag_txt} — 
                     <small style='color:#7C8894;'>{m.get('seccion') or 'sin sección'}</small><br>
                     <span>Criticidad: {CRIT_LABELS.get(m.get('criticidad'), m.get('criticidad'))} · Costo Hora de Parada: Gs. {costo_parada_fmt}</span>
                 </div>
