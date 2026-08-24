@@ -75,3 +75,10 @@ def render_vista_publica(equipo_id):
             # y muestre la pantalla de login normal, sin perder el contexto.
             st.session_state["forzar_login_admin"] = True
             st.rerun()
+
+    # TEMPORAL — borrar este bloque una vez resuelto el error de RLS.
+    with st.expander("🔧 Info técnica (para depurar el error)"):
+        from database.conection_publica import get_info_debug
+        info = get_info_debug()
+        st.code(f"URL usada: {info['url']}\nAnon key usada: {info['anon_key_enmascarada']}")
+        st.caption("Comparalo contra Supabase -> tu proyecto -> Settings -> API (Project URL y anon/public key).")
