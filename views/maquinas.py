@@ -136,6 +136,33 @@ def render_maquinas():
                     st.session_state.maquinas = get_maquinas()
                     st.rerun()
 
+            with st.expander(f"✏️ Editar datos de {m.get('nombre')}"):
+                col_e1, col_e2 = st.columns(2)
+                nuevo_tag = col_e1.text_input("Tag", value=m.get("tag") or "", key=f"edit_tag_{m.get('id')}")
+                nuevo_nombre = col_e2.text_input("Nombre", value=m.get("nombre") or "", key=f"edit_nombre_{m.get('id')}")
+                col_e3, col_e4 = st.columns(2)
+                nuevo_codigo = col_e3.text_input("Código Único", value=m.get("codigo") or "", key=f"edit_codigo_{m.get('id')}")
+                nueva_seccion = col_e4.text_input("Sección / Área", value=m.get("seccion") or "", key=f"edit_seccion_{m.get('id')}")
+                nueva_criticidad = st.selectbox(
+                    "Criticidad", ["A", "B", "C"], format_func=lambda x: CRIT_LABELS[x],
+                    index=["A", "B", "C"].index(m.get("criticidad")) if m.get("criticidad") in ["A", "B", "C"] else 0,
+                    key=f"edit_criticidad_{m.get('id')}"
+                )
+                if st.button("💾 Guardar cambios", key=f"save_edit_maquina_{m.get('id')}"):
+                    if not nuevo_nombre.strip() or not nuevo_codigo.strip():
+                        st.error("El nombre y el código son obligatorios.")
+                    else:
+                        update_maquina(m.get("id"), {
+                            "tag": nuevo_tag.strip() or None,
+                            "nombre": nuevo_nombre,
+                            "codigo": nuevo_codigo,
+                            "seccion": nueva_seccion,
+                            "criticidad": nueva_criticidad
+                        })
+                        st.session_state.maquinas = get_maquinas()
+                        st.success("✅ Máquina actualizada.")
+                        st.rerun()
+
             with st.expander(f"💰 Editar costo de hora de parada de {m.get('nombre')}"):
                 nuevo_costo_parada = st.number_input(
                     "Costo por Hora de Parada (Gs.)", min_value=0, step=1000,
