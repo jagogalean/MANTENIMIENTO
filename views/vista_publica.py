@@ -1,11 +1,11 @@
 import streamlit as st
 from datetime import datetime
-from database.conection_publica import get_ficha_publica_equipo, insertar_solicitud_falla
+from database.conection_publica import get_ficha_publica_equipo, get_planes_publico_equipo, insertar_solicitud_falla
 
 
 def _fmt_fecha(fecha_str):
     if not fecha_str:
-        return "No hay uno programado"
+        return "No hay una programada"
     try:
         return datetime.strptime(fecha_str, "%Y-%m-%d").strftime("%d/%m/%Y")
     except (TypeError, ValueError):
@@ -33,11 +33,24 @@ def render_vista_publica(equipo_id):
         <div class='industrial-panel'>
             <h3 style='margin-top:0; color:#E5E9EC;'>{equipo.get('nombre')}</h3>
             <span>🏷️ <strong>ID:</strong> {equipo.get('id')}</span><br>
-            <span>📍 <strong>Ubicación:</strong> {equipo.get('ubicacion') or 'No especificada'}</span><br>
-            <span>🛠️ <strong>Último preventivo:</strong> {_fmt_fecha(equipo.get('ultimo_preventivo'))}</span><br>
-            <span>🗓️ <strong>Próximo preventivo:</strong> {_fmt_fecha(equipo.get('proximo_preventivo'))}</span>
+            <span>📍 <strong>Ubicación:</strong> {equipo.get('ubicacion') or 'No especificada'}</span>
         </div>
         """, unsafe_allow_html=True)
+
+        # Cada plan preventivo se muestra por separado (si el equipo tiene
+        # más de uno, ej: uno mensual y otro quincenal, no se mezclan).
+        planes = get_planes_publico_equipo(equipo_id)
+        st.markdown("##### 🗓️ Mantenimiento Preventivo")
+        if not planes:
+            st.caption("Este equipo no tiene planes preventivos cargados todavía.")
+        else:
+            for p in planes:
+                st.markdown(f"""
+                <div class='industrial-panel'>
+                    <strong>{p.get('nombre_plan')}</strong> <small style='color:#7C8894;'>(cada {p.get('frecuencia_dias')} días)</small><br>
+                    <span>🛠️ Último: {_fmt_fecha(p.get('ultima_ejecucion'))} · 🗓️ Próximo: {_fmt_fecha(p.get('proxima_ejecucion'))}</span>
+                </div>
+                """, unsafe_allow_html=True)
 
     st.markdown("---")
     st.subheader("🚨 Reportar Avería / Falla")
@@ -75,10 +88,3 @@ def render_vista_publica(equipo_id):
             # y muestre la pantalla de login normal, sin perder el contexto.
             st.session_state["forzar_login_admin"] = True
             st.rerun()
-
-    # TEMPORAL — borrar este bloque una vez resuelto el error de RLS.
-    with st.expander("🔧 Info técnica (para depurar el error)"):
-        from database.conection_publica import get_info_debug
-        info = get_info_debug()
-        st.code(f"URL usada: {info['url']}\nAnon key usada: {info['anon_key_enmascarada']}")
-        st.caption("Comparalo contra Supabase -> tu proyecto -> Settings -> API (Project URL y anon/public key).")
