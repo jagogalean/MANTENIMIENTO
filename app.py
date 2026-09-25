@@ -24,6 +24,7 @@ from views.reportar_falla import render_reportar_falla  # NUEVO: vista del rol O
 from views.presupuesto import render_presupuesto  # NUEVO: presupuesto vs. gasto real
 from views.vista_publica import render_vista_publica  # NUEVO: ficha + reporte público (QR, sin login)
 from views.solicitudes_falla import render_solicitudes_falla  # NUEVO: bandeja de reportes QR (admin)
+from views.solicitudes_compra import render_solicitudes_compra  # NUEVO: solicitud de compra a Compras
 from datetime import datetime
 
 # Configuración de página
@@ -226,7 +227,7 @@ with st.sidebar:
     # Menú distinto según el rol del usuario logueado
     if rol == "admin":
         opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
-                          lbl_fallas, lbl_solicitudes_qr, "Recepción / Entrega", lbl_terceros, lbl_planes,
+                          lbl_fallas, lbl_solicitudes_qr, "🛒 Solicitud de Compra", "Recepción / Entrega", lbl_terceros, lbl_planes,
                           "📅 Calendario Preventivo", "👷 Técnicos", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
         opciones_menu = ["Panel General", "💰 Presupuesto", "📑 Reportes"]
@@ -265,6 +266,8 @@ elif "Presupuesto" in opcion:
     render_presupuesto(usuario)  # NUEVO: presupuesto vs. gasto real
 elif "Reportes QR" in opcion:
     render_solicitudes_falla()  # NUEVO: bandeja de reportes públicos (QR)
+elif "Solicitud de Compra" in opcion:
+    render_solicitudes_compra(usuario)  # NUEVO: solicitud de compra a Compras
 elif "Panel General" in opcion:
     render_dashboard()
 elif "Máquinas" in opcion:
