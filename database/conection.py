@@ -356,3 +356,27 @@ def guardar_presupuesto(periodo: str, categoria: str, monto: float):
     payload = {"periodo": periodo, "categoria": categoria, "monto": monto}
     response = supabase.table("presupuestos").upsert(payload, on_conflict="periodo,categoria").execute()
     return response.data
+
+
+# ============================================================
+# ============ NUEVO: SOLICITUDES DE COMPRA ====================
+# ============================================================
+def get_solicitudes_compra():
+    response = supabase.table("solicitudes_compra").select("*").order("fecha_solicitud", desc=True).execute()
+    return response.data
+
+def insert_solicitud_compra(data: dict):
+    response = supabase.table("solicitudes_compra").insert(data).execute()
+    return response.data
+
+def update_solicitud_compra(solicitud_id, patch: dict):
+    response = supabase.table("solicitudes_compra").update(patch).eq("id", solicitud_id).execute()
+    return response.data
+
+def subir_foto_solicitud_compra(solicitud_id, nombre_archivo: str, contenido: bytes, content_type: str):
+    """Sube una foto al bucket 'solicitudes-compra' y devuelve su URL pública."""
+    ruta = f"{solicitud_id}/{nombre_archivo}"
+    supabase.storage.from_("solicitudes-compra").upload(
+        ruta, contenido, {"content-type": content_type, "upsert": "true"}
+    )
+    return supabase.storage.from_("solicitudes-compra").get_public_url(ruta)
