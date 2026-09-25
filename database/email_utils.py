@@ -18,10 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 
 DESTINATARIOS = [
-    "bmorales@vitopelparaguay.com",
-    "rjara@vitopelparaguay.com",
-    "icaballero@vitopelparaguay.com",
-    "mmelo@vitopelargentina.com",
+        "jagogali@gmail.com",    
 ]
 
 
