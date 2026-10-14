@@ -1,5 +1,4 @@
 import streamlit as st
-# Esta es la ruta corregida sin el ".connection" intermedio
 from database.conection import (
     get_maquinas, get_fallas, get_checklists, get_terceros, get_ots, get_repuestos,
     get_tecnicos, get_planes, get_documentos, get_ot_repuestos,
@@ -20,11 +19,12 @@ from views.asistente import render_asistente
 from views.usuarios import render_usuarios
 from views.mis_ots import render_mis_ots
 from views.calendario import render_calendario
-from views.reportar_falla import render_reportar_falla  # NUEVO: vista del rol Operador
-from views.presupuesto import render_presupuesto  # NUEVO: presupuesto vs. gasto real
-from views.vista_publica import render_vista_publica  # NUEVO: ficha + reporte público (QR, sin login)
-from views.solicitudes_falla import render_solicitudes_falla  # NUEVO: bandeja de reportes QR (admin)
-from views.solicitudes_compra import render_solicitudes_compra  # NUEVO: solicitud de compra a Compras
+from views.reportar_falla import render_reportar_falla
+from views.presupuesto import render_presupuesto
+from views.vista_publica import render_vista_publica
+from views.solicitudes_falla import render_solicitudes_falla
+from views.solicitudes_compra import render_solicitudes_compra
+from views.disco_externo import render_disco_externo  # NUEVO: Sincronizador con Disco E: y Power BI
 from datetime import datetime
 
 # Configuración de página
@@ -38,11 +38,8 @@ st.set_page_config(
 # Estética Industrial Oscura Personalizada
 st.markdown("""
     <style>
-        /* Estilos base fondo y contenedores */
         .stApp { background-color: #12171B; color: #E5E9EC; }
         [data-testid="stSidebar"] { background-color: #0E1216; border-right: 1px solid #22282E; }
-        
-        /* Contenedores tipo Panel del MVP */
         .industrial-panel {
             background-color: #1B2127;
             border: 1px solid #2A323A;
@@ -50,14 +47,10 @@ st.markdown("""
             padding: 16px;
             margin-bottom: 12px;
         }
-        
-        /* CORRECCIÓN: Forzar texto claro y legible en el menú de la barra lateral */
         [data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
             color: #E5E9EC !important;
             font-size: 14px !important;
-            }
-        
-        /* Modificación de Inputs globales de Streamlit para acoplar al tema */
+        }
         .stTextInput>div>div>input, .stSelectbox>div>div>div, .stTextArea>div>div>textarea {
             background-color: #12171B !important;
             border: 1px solid #2A323A !important;
@@ -66,14 +59,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ============================================================
-# NUEVO: DESVÍO PÚBLICO (QR sin login) — va ANTES del login a propósito.
-# Si la URL trae ?equipo=X (por ejemplo, alguien escaneó el QR pegado en
-# una máquina), se muestra la ficha pública + formulario de reporte, sin
-# pasar por la pantalla de inicio de sesión. Si la persona toca el botón
-# "Acceso Administrativo", la bandera forzar_login_admin hace que se
-# ignore el parámetro y se muestre el login normal.
-# ============================================================
+# DESVÍO PÚBLICO (QR sin login)
 equipo_qr_id = st.query_params.get("equipo")
 if equipo_qr_id and not st.session_state.get("forzar_login_admin"):
     try:
@@ -83,9 +69,7 @@ if equipo_qr_id and not st.session_state.get("forzar_login_admin"):
     render_vista_publica(equipo_id_normalizado)
     st.stop()
 
-# ============================================================
-# LOGIN (Supabase Auth) — nada de lo de abajo corre sin sesión
-# ============================================================
+# LOGIN (Supabase Auth)
 if "usuario_actual" not in st.session_state:
     st.session_state.usuario_actual = None
 
@@ -116,7 +100,7 @@ if not st.session_state.usuario_actual:
 usuario = st.session_state.usuario_actual
 rol = usuario.get("rol", "tecnico")
 
-# Inicializar Estados de Sesión en Memoria (Sincronizados con Supabase)
+# Inicializar Estados de Sesión en Memoria
 if "maquinas" not in st.session_state:
     st.session_state.maquinas = get_maquinas()
 if "fallas" not in st.session_state:
@@ -144,7 +128,6 @@ if "plan_actividades" not in st.session_state:
 if "plan_ejecuciones" not in st.session_state:
     st.session_state.plan_ejecuciones = get_plan_ejecuciones()
 
-# Helpers de cálculo de alertas para Badges de Navegación
 def days_until(date_str):
     if not date_str: return None
     try:
@@ -165,7 +148,6 @@ def _dias_plan(fecha_str):
 
 planes_vencidos = len([p for p in st.session_state.planes if _dias_plan(p.get("proxima_ejecucion")) is not None and _dias_plan(p.get("proxima_ejecucion")) <= 7])
 
-# NUEVO: contador de reportes públicos (QR) pendientes de revisar, solo para admin
 if rol == "admin":
     from views.solicitudes_falla import get_solicitudes_falla
     st.session_state.solicitudes_qr_pendientes = len([
@@ -188,19 +170,15 @@ ots_bloqueadas = len([o for o in st.session_state.ots if o.get("estado") == "Blo
 if rol == "tecnico":
     mis_ots_pendientes += backlog_sin_asignar
 
-# --- LECTURA DE QR: si la URL trae ?maquina_id=X&vista=checklist, saltar directo ---
 query_params = st.query_params
 if "maquina_id" in query_params:
     st.session_state["qr_maquina_id"] = query_params["maquina_id"]
     if query_params.get("vista") == "checklist":
         st.session_state["forzar_vista"] = "Recepción / Entrega"
 
-# ============================================================
-# SIDEBAR: identidad del usuario + menú según su rol
-# ============================================================
 with st.sidebar:
     st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 14px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO by Javier Galeano</div>", unsafe_allow_html=True)
-    st.markdown("<div style='color: #5A6570; font-family: monospace; font-size: 10px; margin-bottom: 4px;'>MVP · v0.2 (Python)</div>", unsafe_allow_html=True)
+    st.markdown("<div style='color: #5A6570; font-family: monospace; font-size: 10px; margin-bottom: 4px;'>MVP · v0.3 (Hybrid + OpenOrange)</div>", unsafe_allow_html=True)
     st.markdown(f"<div style='color: #E5E9EC; font-size: 13px; margin-bottom: 16px;'>👤 {usuario.get('nombre')} · <span style='color:#38BDF8;'>{rol.upper()}</span></div>", unsafe_allow_html=True)
 
     if st.button("🚪 Cerrar Sesión"):
@@ -210,7 +188,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Textos con badges para el menú
     lbl_fallas = f"🚨 Fallas / RCA ({fallas_abiertas})" if fallas_abiertas > 0 else "📋 Fallas / RCA"
     lbl_terceros = f"🚚 Terceros ({venc_proximos})" if venc_proximos > 0 else "📦 Terceros"
     lbl_repuestos = f"🚨 Repuestos / Stock ({criticos_stock})" if criticos_stock > 0 else "🔩 Repuestos / Stock"
@@ -220,22 +197,21 @@ with st.sidebar:
     alertas_ot = backlog_sin_asignar + ots_bloqueadas
     lbl_ots = f"🚨 Órdenes de Trabajo ({alertas_ot})" if alertas_ot > 0 else "🛠️ Órdenes de Trabajo"
 
-    # NUEVO: badge de reportes públicos (QR) pendientes de revisar
     solicitudes_qr_pendientes = st.session_state.get("solicitudes_qr_pendientes", 0)
     lbl_solicitudes_qr = f"🚨 Reportes QR ({solicitudes_qr_pendientes})" if solicitudes_qr_pendientes > 0 else "📨 Reportes QR"
 
-    # Menú distinto según el rol del usuario logueado
     if rol == "admin":
-        opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
-                          lbl_fallas, lbl_solicitudes_qr, "🛒 Solicitud de Compra", "Recepción / Entrega", lbl_terceros, lbl_planes,
-                          "📅 Calendario Preventivo", "👷 Técnicos", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
+        opciones_menu = [
+            "🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
+            lbl_fallas, lbl_solicitudes_qr, "🛒 Solicitud de Compra", "Recepción / Entrega",
+            lbl_terceros, lbl_planes, "📅 Calendario Preventivo", "👷 Técnicos",
+            "💰 Presupuesto", "📑 Reportes", "💾 Disco Externo & Power BI", "🔐 Usuarios"
+        ]
     elif rol == "gerente":
         opciones_menu = ["Panel General", "💰 Presupuesto", "📑 Reportes"]
     elif rol == "operador":
-        # NUEVO: rol Operador/Reportador — solo puede reportar fallas,
-        # que caen automáticamente al backlog compartido de mantenimiento.
         opciones_menu = ["🚨 Reportar Falla"]
-    else:  # tecnico
+    else:
         opciones_menu = ["🧭 Asistente del Día", lbl_mis_ots, "Recepción / Entrega"]
 
     indice_default = 0
@@ -253,27 +229,26 @@ with st.sidebar:
         label_visibility="collapsed"
     )
 
-# ============================================================
-# Enrutamiento de Módulos (Views) — respeta el rol
-# ============================================================
 if "Asistente" in opcion:
     render_asistente()
 elif "Mis OTs" in opcion:
     render_mis_ots(usuario)
 elif "Reportar Falla" in opcion:
-    render_reportar_falla(usuario)  # NUEVO: vista exclusiva del rol Operador
+    render_reportar_falla(usuario)
 elif "Presupuesto" in opcion:
-    render_presupuesto(usuario)  # NUEVO: presupuesto vs. gasto real
+    render_presupuesto(usuario)
 elif "Reportes QR" in opcion:
-    render_solicitudes_falla()  # NUEVO: bandeja de reportes públicos (QR)
+    render_solicitudes_falla()
 elif "Solicitud de Compra" in opcion:
-    render_solicitudes_compra(usuario)  # NUEVO: solicitud de compra a Compras
+    render_solicitudes_compra(usuario)
+elif "Disco Externo" in opcion:
+    render_disco_externo()
 elif "Panel General" in opcion:
     render_dashboard()
 elif "Máquinas" in opcion:
     render_maquinas()
 elif "Órdenes de Trabajo" in opcion:
-    render_ots(usuario)  # MODIFICADO: ahora recibe 'usuario' para el bloque de Administrador
+    render_ots(usuario)
 elif "Repuestos" in opcion:
     render_repuestos()
 elif "Fallas" in opcion:
