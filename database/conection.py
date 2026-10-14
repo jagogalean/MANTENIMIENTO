@@ -5,7 +5,6 @@ from supabase import create_client, Client
 @st.cache_resource
 def init_supabase() -> Client:
     """Inicializa y cachea la conexión con Supabase."""
-    # En producción se usan st.secrets o variables de entorno
     url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
     key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
     
@@ -45,6 +44,10 @@ def insert_falla(data: dict):
 
 def update_falla(falla_id: str, patch: dict):
     response = supabase.table("fallas").update(patch).eq("id", falla_id).execute()
+    return response.data
+
+def delete_falla(falla_id):
+    response = supabase.table("fallas").delete().eq("id", falla_id).execute()
     return response.data
 
 # ----------------- CRUD CHECKLISTS -----------------
@@ -87,9 +90,6 @@ def update_ot(ot_id: str, patch: dict):
     return response.data
 
 def delete_ot(ot_id: str):
-    """NUEVO: permite borrar una OT definitivamente. Pensado para uso exclusivo
-    de administradores (el control de quién puede llamar a esto se hace en la vista,
-    con database.permisos.es_admin)."""
     response = supabase.table("ots").delete().eq("id", ot_id).execute()
     return response.data
 
@@ -106,13 +106,16 @@ def update_repuesto(repuesto_id: str, patch: dict):
     response = supabase.table("repuestos").update(patch).eq("id", repuesto_id).execute()
     return response.data
 
-# (Opcional) Tabla intermedia de consumo de repuestos por OT
 def insert_ot_repuesto(data: dict):
     response = supabase.table("ot_repuestos").insert(data).execute()
     return response.data
 
 def get_ot_repuestos():
     response = supabase.table("ot_repuestos").select("*").execute()
+    return response.data
+
+def delete_ot_repuestos_por_ot(ot_id):
+    response = supabase.table("ot_repuestos").delete().eq("ot_id", ot_id).execute()
     return response.data
 
 # ----------------- AUTENTICACIÓN Y USUARIOS (roles) -----------------
@@ -159,7 +162,7 @@ def update_tecnico(tecnico_id: str, patch: dict):
     response = supabase.table("tecnicos").update(patch).eq("id", tecnico_id).execute()
     return response.data
 
-# ----------------- CRUD PLAN PREVENTIVO (cabecera: máquina + frecuencia) -----------------
+# ----------------- CRUD PLAN PREVENTIVO -----------------
 def get_planes():
     response = supabase.table("planes_preventivos").select("*").order("proxima_ejecucion", desc=False).execute()
     return response.data
@@ -202,7 +205,7 @@ def delete_documento(documento_id: str):
     response = supabase.table("documentos_maquina").delete().eq("id", documento_id).execute()
     return response.data
 
-# ----------------- HISTORIAL DE EJECUCIONES DEL PLAN (prevista vs realizada) -----------------
+# ----------------- HISTORIAL DE EJECUCIONES DEL PLAN -----------------
 def get_plan_ejecuciones():
     response = supabase.table("plan_ejecuciones").select("*").execute()
     return response.data
@@ -211,7 +214,7 @@ def insert_plan_ejecucion(data: dict):
     response = supabase.table("plan_ejecuciones").insert(data).execute()
     return response.data
 
-# ----------------- CONFIGURACIÓN DE EMPRESA (logo/nombre persistentes) -----------------
+# ----------------- CONFIGURACIÓN DE EMPRESA -----------------
 def get_configuracion_empresa():
     response = supabase.table("configuracion_empresa").select("*").eq("id", 1).execute()
     return response.data[0] if response.data else None
@@ -221,16 +224,7 @@ def guardar_configuracion_empresa(nombre_empresa: str, logo_base64: str):
     response = supabase.table("configuracion_empresa").upsert(payload).execute()
     return response.data
 
-
-# ============================================================
-# ============ NUEVO: LECTURAS CON CACHÉ (RENDIMIENTO) ========
-# ============================================================
-# Catálogos que casi no cambian -> caché larga (5 minutos).
-# Se usan en pantallas de alta concurrencia (Mis OTs, OTs) para no golpear
-# Supabase en cada click de cada usuario. Cuando alguien edita un catálogo
-# desde su propia vista (Máquinas, Técnicos), esa vista sigue refrescando
-# st.session_state como siempre; esta caché igual vence sola a los 5 minutos.
-
+# ----------------- LECTURAS CON CACHÉ -----------------
 @st.cache_data(ttl=300, show_spinner=False)
 def get_maquinas_cached():
     return get_maquinas()
@@ -243,13 +237,6 @@ def get_tecnicos_cached():
 def get_terceros_cached():
     return get_terceros()
 
-
-# Datos transaccionales (OTs, Stock) -> caché corta (15 segundos).
-# Esto evita que dos técnicos vean el backlog "viejo" durante mucho tiempo,
-# sin golpear la base de datos en cada rerender de Streamlit. Después de
-# cualquier escritura (insert/update/delete), hay que llamar a .clear()
-# para que el propio usuario vea el cambio al instante.
-
 @st.cache_data(ttl=15, show_spinner=False)
 def get_ots_cached():
     return get_ots()
@@ -258,19 +245,8 @@ def get_ots_cached():
 def get_repuestos_cached():
     return get_repuestos()
 
-
-# ============================================================
-# ============ NUEVO: PAGINACIÓN SERVER-SIDE (RENDIMIENTO) ====
-# ============================================================
+# ----------------- PAGINACIÓN SERVER-SIDE -----------------
 def get_ots_paginado(pagina: int = 1, tamanio: int = 25, estado: str | None = None):
-    """
-    Trae solo una "página" de OTs desde Supabase (no toda la tabla), usando
-    .range() del lado del servidor. Devuelve (filas_de_la_pagina, total_de_filas).
-
-    Se usa para el listado/historial (que crece indefinidamente); NO se usa
-    para el Dashboard ni el Asistente del Día, que necesitan ver el 100%
-    de los datos para calcular KPIs y armar la agenda.
-    """
     desde = (pagina - 1) * tamanio
     hasta = desde + tamanio - 1
 
@@ -281,25 +257,8 @@ def get_ots_paginado(pagina: int = 1, tamanio: int = 25, estado: str | None = No
     response = query.range(desde, hasta).execute()
     return response.data, (response.count or 0)
 
-
-# ============================================================
-# ============ NUEVO: RPC TRANSACCIONALES (INTEGRIDAD) ========
-# ============================================================
-# Estas dos funciones llaman a procedimientos SQL creados en Supabase
-# (ver archivo mejoras_cmms.sql) que hacen el chequeo + la escritura en
-# una sola transacción atómica, eliminando la condición de carrera que
-# existía al hacer "leer stock -> comparar en Python -> escribir" en dos
-# pasos separados.
-
+# ----------------- RPC TRANSACCIONALES -----------------
 def consumir_repuesto_seguro(ot_id, repuesto_id, cantidad):
-    """
-    Descuenta stock de un repuesto y registra su consumo en una OT,
-    todo en una sola transacción SQL (función consumir_repuesto en Supabase).
-
-    Lanza ValueError("STOCK_INSUFICIENTE") si no hay stock suficiente
-    en el momento exacto de guardar (por ejemplo, si otro técnico lo
-    consumió un segundo antes).
-    """
     try:
         response = supabase.rpc("consumir_repuesto", {
             "p_ot_id": ot_id,
@@ -312,15 +271,7 @@ def consumir_repuesto_seguro(ot_id, repuesto_id, cantidad):
             raise ValueError("STOCK_INSUFICIENTE")
         raise
 
-
 def tomar_ot_backlog_seguro(ot_id, tecnico_id):
-    """
-    Asigna una OT del backlog compartido a un técnico, pero solo si sigue
-    sin asignar en ese instante (función tomar_ot_backlog en Supabase).
-
-    Lanza ValueError("OT_YA_TOMADA") si otro técnico ya se la asignó
-    un segundo antes.
-    """
     try:
         response = supabase.rpc("tomar_ot_backlog", {
             "p_ot_id": ot_id,
@@ -332,10 +283,7 @@ def tomar_ot_backlog_seguro(ot_id, tecnico_id):
             raise ValueError("OT_YA_TOMADA")
         raise
 
-
-# ============================================================
-# ============ NUEVO: PRESUPUESTO DE MANTENIMIENTO ============
-# ============================================================
+# ----------------- PRESUPUESTO DE MANTENIMIENTO -----------------
 def get_presupuestos():
     response = supabase.table("presupuestos").select("*").order("periodo", desc=True).execute()
     return response.data
@@ -345,22 +293,11 @@ def get_presupuestos_cached():
     return get_presupuestos()
 
 def guardar_presupuesto(periodo: str, categoria: str, monto: float):
-    """
-    Crea o actualiza el presupuesto de un mes + categoría (upsert: si ya
-    existe una fila para ese mes y esa categoría, la actualiza en vez de
-    duplicarla, gracias al 'unique (periodo, categoria)' de la tabla).
-
-    periodo: string 'YYYY-MM-01' (siempre el día 1 del mes)
-    categoria: 'total' | 'mano_obra' | 'repuestos' | 'terceros'
-    """
     payload = {"periodo": periodo, "categoria": categoria, "monto": monto}
     response = supabase.table("presupuestos").upsert(payload, on_conflict="periodo,categoria").execute()
     return response.data
 
-
-# ============================================================
-# ============ NUEVO: SOLICITUDES DE COMPRA ====================
-# ============================================================
+# ----------------- SOLICITUDES DE COMPRA -----------------
 def get_solicitudes_compra():
     response = supabase.table("solicitudes_compra").select("*").order("fecha_solicitud", desc=True).execute()
     return response.data
@@ -373,10 +310,24 @@ def update_solicitud_compra(solicitud_id, patch: dict):
     response = supabase.table("solicitudes_compra").update(patch).eq("id", solicitud_id).execute()
     return response.data
 
+def delete_solicitud_compra(solicitud_id):
+    response = supabase.table("solicitudes_compra").delete().eq("id", solicitud_id).execute()
+    return response.data
+
 def subir_foto_solicitud_compra(solicitud_id, nombre_archivo: str, contenido: bytes, content_type: str):
-    """Sube una foto al bucket 'solicitudes-compra' y devuelve su URL pública."""
     ruta = f"{solicitud_id}/{nombre_archivo}"
     supabase.storage.from_("solicitudes-compra").upload(
         ruta, contenido, {"content-type": content_type, "upsert": "true"}
     )
     return supabase.storage.from_("solicitudes-compra").get_public_url(ruta)
+
+def borrar_fotos_storage_solicitud(solicitud_id):
+    """Borra las fotos del bucket de Supabase cuando la compra ya fue respaldada al disco E:"""
+    try:
+        archivos = supabase.storage.from_("solicitudes-compra").list(str(solicitud_id))
+        if archivos:
+            rutas = [f"{solicitud_id}/{a['name']}" for a in archivos if a.get("name")]
+            if rutas:
+                supabase.storage.from_("solicitudes-compra").remove(rutas)
+    except Exception:
+        pass
