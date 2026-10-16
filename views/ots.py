@@ -380,4 +380,186 @@ def render_ots(usuario):
             with col_borrar:
                 confirmar_borrado = st.checkbox("Confirmo que quiero eliminar esta OT", key=f"confirmar_borrado_{ot_actual.get('id')}")
                 if st.button("🗑️ Eliminar OT Definitivamente", key=f"borrar_{ot_actual.get('id')}", disabled=not confirmar_borrado):
-                    delete_ot(ot_actual.get
+                    delete_ot(ot_actual.get("id"))
+                    _refrescar_ots()
+                    st.success(f"🗑️ {ot_actual.get('codigo')} fue eliminada del sistema.")
+                    st.rerun()
+
+    # --- CIERRE DE COSTOS Y LUCRO CESANTE ---
+    st.markdown("---")
+    st.subheader("💰 Cierre de Costos y Lucro Cesante")
+    st.caption("Registrá el costo real de una OT (interna o tercerizada) y el lucro cesante por la parada de máquina. Los valores se recalculan en vivo a medida que completás los campos.")
+
+    if not ots:
+        st.caption("Todavía no hay OTs para cerrar costos.")
+    else:
+        map_m_nombre = {m["id"]: m["nombre"] for m in maquinas}
+        map_m_obj = {m["id"]: m for m in maquinas}
+        map_tec_obj = {t["id"]: t for t in tecnicos}
+        dict_ots_costo = {f"{o.get('codigo')} — {map_m_nombre.get(o.get('maquina_id'), '?')} ({o.get('estado')})": o for o in ots}
+        ot_costo_sel_key = st.selectbox("Seleccionar OT a cerrar", options=list(dict_ots_costo.keys()), key="ot_costo_sel")
+        ot_costo = dict_ots_costo[ot_costo_sel_key]
+        maquina_de_ot = map_m_obj.get(ot_costo.get("maquina_id"), {})
+        costo_hora_parada_maquina = maquina_de_ot.get("costo_hora_parada", 0) or 0
+
+        tipo_ejecucion = st.radio(
+            "Tipo de Ejecución", ["interno", "tercerizado"],
+            format_func=lambda x: "🔧 Interno (con técnico propio)" if x == "interno" else "🚚 Tercerizado (proveedor externo)",
+            horizontal=True, key=f"tipo_ejec_{ot_costo.get('id')}"
+        )
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Parada de máquina**")
+            fecha_ini_parada = st.date_input("Fecha inicio de parada", value=datetime.now().date(), key=f"fip_{ot_costo.get('id')}")
+            hora_ini_parada = st.time_input("Hora inicio de parada", value=time(8, 0), key=f"hip_{ot_costo.get('id')}")
+            fecha_fin_parada = st.date_input("Fecha fin de parada", value=datetime.now().date(), key=f"ffp_{ot_costo.get('id')}")
+            hora_fin_parada = st.time_input("Hora fin de parada", value=datetime.now().time(), key=f"hfp_{ot_costo.get('id')}")
+
+        with col_b:
+            if tipo_ejecucion == "interno":
+                st.markdown("**Mano de obra interna**")
+                dict_tec_costo = {t["nombre"]: t["id"] for t in tecnicos}
+                if not dict_tec_costo:
+                    st.warning("Cargá técnicos primero en '👷 Técnicos' (con su costo hora-hombre).")
+                    tecnico_id_costo = None
+                else:
+                    tec_costo_sel = st.selectbox("Técnico", list(dict_tec_costo.keys()), key=f"tec_costo_{ot_costo.get('id')}")
+                    tecnico_id_costo = dict_tec_costo[tec_costo_sel]
+                horas_trabajadas = st.number_input("Horas trabajadas", min_value=0.0, step=0.5, key=f"horas_trab_{ot_costo.get('id')}")
+                proveedor_id_costo, numero_factura, costo_factura, costo_flete = None, "", 0, 0
+            else:
+                st.markdown("**Datos del proveedor tercerizado**")
+                proveedores_disponibles = [t for t in st.session_state.get("terceros", []) if t.get("contacto")]
+                dict_prov = {f"{t['contacto']} ({t.get('ruc') or 'sin RUC'})": t["id"] for t in proveedores_disponibles}
+                if not dict_prov:
+                    st.warning("Cargá una empresa proveedora primero en '🚚 Terceros y Proveedores'.")
+                    proveedor_id_costo = None
+                else:
+                    prov_sel = st.selectbox("Proveedor", list(dict_prov.keys()), key=f"prov_costo_{ot_costo.get('id')}")
+                    proveedor_id_costo = dict_prov[prov_sel]
+                numero_factura = st.text_input("Número de factura", key=f"nro_fact_{ot_costo.get('id')}")
+                costo_factura = st.number_input("Monto de la factura (Gs.)", min_value=0, step=1000, key=f"monto_fact_{ot_costo.get('id')}")
+                costo_flete = st.number_input("Flete / Logística (Gs.)", min_value=0, step=1000, key=f"flete_{ot_costo.get('id')}")
+                tecnico_id_costo, horas_trabajadas = None, 0
+
+        # Costo de repuestos: ya se calcula solo, desde lo que se fue consumiendo en la OT (no se vuelve a cargar acá)
+        map_costo_rep = {r["id"]: r.get("costo_unitario", 0) for r in repuestos}
+        costo_repuestos_ot = sum(
+            orr.get("cantidad_usada", 0) * map_costo_rep.get(orr.get("repuesto_id"), 0)
+            for orr in st.session_state.get("ot_repuestos", [])
+            if orr.get("ot_id") == ot_costo.get("id")
+        )
+
+        costo_hora_hombre_tec = map_tec_obj.get(tecnico_id_costo, {}).get("costo_hora_hombre", 0) if tecnico_id_costo else 0
+        fecha_inicio_parada_dt = datetime.combine(fecha_ini_parada, hora_ini_parada)
+        fecha_fin_parada_dt = datetime.combine(fecha_fin_parada, hora_fin_parada)
+
+        resultado = calcular_costo_ot(
+            tipo_ejecucion=tipo_ejecucion,
+            horas_trabajadas=horas_trabajadas,
+            costo_hora_hombre=costo_hora_hombre_tec,
+            costo_repuestos=costo_repuestos_ot,
+            costo_factura_tercero=costo_factura,
+            costo_flete_logistica=costo_flete,
+            fecha_inicio_parada=fecha_inicio_parada_dt,
+            fecha_fin_parada=fecha_fin_parada_dt,
+            costo_hora_parada=costo_hora_parada_maquina
+        )
+
+        st.markdown("##### 📊 Costos calculados en vivo")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Horas de Parada", f"{resultado['horas_parada']:.1f} hs")
+        m2.metric("Costo Directo", f"Gs. {resultado['costo_directo']:,.0f}".replace(",", "."))
+        m3.metric("Lucro Cesante", f"Gs. {resultado['costo_lucro_cesante']:,.0f}".replace(",", "."))
+        m4.metric("💰 Costo Total OT", f"Gs. {resultado['costo_total']:,.0f}".replace(",", "."))
+        if costo_repuestos_ot:
+            st.caption(f"Incluye Gs. {costo_repuestos_ot:,.0f}".replace(",", ".") + " de repuestos ya consumidos en esta OT.")
+
+        if st.button("💾 Guardar Cierre de Costos", key=f"guardar_costo_{ot_costo.get('id')}"):
+            try:
+                patch_costo = {
+                    "tipo_ejecucion": tipo_ejecucion,
+                    "proveedor_id": proveedor_id_costo,
+                    "fecha_inicio_parada": fecha_inicio_parada_dt.isoformat(),
+                    "fecha_fin_parada": fecha_fin_parada_dt.isoformat(),
+                    "costo_factura_tercero": costo_factura,
+                    "costo_flete_logistica": costo_flete,
+                    "costo_lucro_cesante": resultado["costo_lucro_cesante"],
+                    "costo_total_ot": resultado["costo_total"],
+                    "numero_factura": numero_factura,
+                    "horas_paro": resultado["horas_parada"]
+                }
+                if tipo_ejecucion == "interno":
+                    patch_costo["tecnico_id"] = tecnico_id_costo
+                    patch_costo["costo_mano_obra"] = resultado["costo_mano_obra"]
+                update_ot(ot_costo.get("id"), patch_costo)
+                _refrescar_ots()
+                st.success(f"✅ Costos de {ot_costo.get('codigo')} guardados: Total Gs. {resultado['costo_total']:,.0f}".replace(",", "."))
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ No se pudo guardar el cierre de costos: {e}")
+
+    # --- HISTORIAL / TABLA DE OTS (NUEVO: con paginación server-side) ---
+    st.markdown("---")
+    st.subheader("Historial de Órdenes de Trabajo")
+
+    if "hist_ot_pagina" not in st.session_state:
+        st.session_state.hist_ot_pagina = 1
+
+    TAMANIO_PAGINA = 25
+    filtro_estado = st.selectbox("Filtrar por estado", ["Todos"] + ESTADOS_OT, key="hist_ot_filtro")
+    estado_query = None if filtro_estado == "Todos" else filtro_estado
+
+    # NUEVO: en vez de traer TODAS las OTs de una vez, se pide solo la página
+    # actual directamente a Supabase con .range(). Esto evita que la tabla de
+    # historial se vuelva lenta a medida que se acumulan cientos de OTs.
+    ots_pagina, total_ots = get_ots_paginado(
+        pagina=st.session_state.hist_ot_pagina,
+        tamanio=TAMANIO_PAGINA,
+        estado=estado_query
+    )
+    total_paginas = max(1, -(-total_ots // TAMANIO_PAGINA))  # redondeo hacia arriba
+
+    if st.session_state.hist_ot_pagina > total_paginas:
+        st.session_state.hist_ot_pagina = total_paginas
+
+    if not ots_pagina:
+        st.info("No hay órdenes de trabajo registradas con este filtro.")
+    else:
+        tabla_ots = []
+        map_m_nombre = {m["id"]: m["nombre"] for m in maquinas}
+        map_tec_nombre = {t["id"]: t["nombre"] for t in tecnicos}
+        for o in ots_pagina:
+            tabla_ots.append({
+                "Código": o.get("codigo"),
+                "OT OpenOrange": o.get("nro_ot_openorange") or "—",
+                "OC OpenOrange": o.get("nro_oc_openorange") or "—",
+                "Máquina": map_m_nombre.get(o.get("maquina_id"), "Desconocida"),
+                "Tipo": o.get("tipo_mantenimiento"),
+                "Ejecución": o.get("tipo_ejecucion", "interno"),
+                "Estado": o.get("estado"),
+                "Técnico": map_tec_nombre.get(o.get("tecnico_id"), "Sin asignar"),
+                "Horas Paro": o.get("horas_paro"),
+                "Costo M.O.": o.get("costo_mano_obra", 0),
+                "Costo Total OT": o.get("costo_total_ot", 0),
+                "Motivo Bloqueo": o.get("motivo_bloqueo") or "—",
+                "Permiso Trabajo": "✅" if o.get("permiso_trabajo_emitido") else ("⚠️ Pendiente" if o.get("requiere_permiso_trabajo") else "—"),
+                "Descripción": o.get("descripcion")
+            })
+        st.dataframe(tabla_ots, use_container_width=True)
+
+        col_prev, col_info, col_next = st.columns([0.2, 0.6, 0.2])
+        with col_prev:
+            if st.button("⬅️ Anterior", disabled=st.session_state.hist_ot_pagina <= 1, key="hist_ot_prev"):
+                st.session_state.hist_ot_pagina -= 1
+                st.rerun()
+        with col_info:
+            st.markdown(
+                f"<center>Página {st.session_state.hist_ot_pagina} de {total_paginas} · {total_ots} OT(s) en total</center>",
+                unsafe_allow_html=True
+            )
+        with col_next:
+            if st.button("Siguiente ➡️", disabled=st.session_state.hist_ot_pagina >= total_paginas, key="hist_ot_next"):
+                st.session_state.hist_ot_pagina += 1
+                st.rerun()
