@@ -5,6 +5,7 @@ from supabase import create_client, Client
 @st.cache_resource
 def init_supabase() -> Client:
     """Inicializa y cachea la conexión con Supabase."""
+    # En producción se usan st.secrets o variables de entorno
     url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
     key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
     
@@ -90,6 +91,21 @@ def update_ot(ot_id: str, patch: dict):
     return response.data
 
 def delete_ot(ot_id: str):
+    """NUEVO: permite borrar una OT definitivamente limpiando antes todas sus
+    referencias en otras tablas (ot_repuestos, solicitudes_falla QR y solicitudes_compra)
+    para que Supabase nunca arroje postgrest.exceptions.APIError por Foreign Key."""
+    try:
+        supabase.table("ot_repuestos").delete().eq("ot_id", ot_id).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("solicitudes_falla").update({"ot_id": None}).eq("ot_id", ot_id).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("solicitudes_compra").update({"ot_id": None}).eq("ot_id", ot_id).execute()
+    except Exception:
+        pass
     response = supabase.table("ots").delete().eq("id", ot_id).execute()
     return response.data
 
@@ -106,6 +122,7 @@ def update_repuesto(repuesto_id: str, patch: dict):
     response = supabase.table("repuestos").update(patch).eq("id", repuesto_id).execute()
     return response.data
 
+# (Opcional) Tabla intermedia de consumo de repuestos por OT
 def insert_ot_repuesto(data: dict):
     response = supabase.table("ot_repuestos").insert(data).execute()
     return response.data
@@ -162,7 +179,7 @@ def update_tecnico(tecnico_id: str, patch: dict):
     response = supabase.table("tecnicos").update(patch).eq("id", tecnico_id).execute()
     return response.data
 
-# ----------------- CRUD PLAN PREVENTIVO -----------------
+# ----------------- CRUD PLAN PREVENTIVO (cabecera: máquina + frecuencia) -----------------
 def get_planes():
     response = supabase.table("planes_preventivos").select("*").order("proxima_ejecucion", desc=False).execute()
     return response.data
@@ -205,7 +222,7 @@ def delete_documento(documento_id: str):
     response = supabase.table("documentos_maquina").delete().eq("id", documento_id).execute()
     return response.data
 
-# ----------------- HISTORIAL DE EJECUCIONES DEL PLAN -----------------
+# ----------------- HISTORIAL DE EJECUCIONES DEL PLAN (prevista vs realizada) -----------------
 def get_plan_ejecuciones():
     response = supabase.table("plan_ejecuciones").select("*").execute()
     return response.data
@@ -214,7 +231,7 @@ def insert_plan_ejecucion(data: dict):
     response = supabase.table("plan_ejecuciones").insert(data).execute()
     return response.data
 
-# ----------------- CONFIGURACIÓN DE EMPRESA -----------------
+# ----------------- CONFIGURACIÓN DE EMPRESA (logo/nombre persistentes) -----------------
 def get_configuracion_empresa():
     response = supabase.table("configuracion_empresa").select("*").eq("id", 1).execute()
     return response.data[0] if response.data else None
@@ -224,7 +241,10 @@ def guardar_configuracion_empresa(nombre_empresa: str, logo_base64: str):
     response = supabase.table("configuracion_empresa").upsert(payload).execute()
     return response.data
 
-# ----------------- LECTURAS CON CACHÉ -----------------
+
+# ============================================================
+# ============ NUEVO: LECTURAS CON CACHÉ (RENDIMIENTO) ========
+# ============================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def get_maquinas_cached():
     return get_maquinas()
@@ -245,7 +265,10 @@ def get_ots_cached():
 def get_repuestos_cached():
     return get_repuestos()
 
-# ----------------- PAGINACIÓN SERVER-SIDE -----------------
+
+# ============================================================
+# ============ NUEVO: PAGINACIÓN SERVER-SIDE (RENDIMIENTO) ====
+# ============================================================
 def get_ots_paginado(pagina: int = 1, tamanio: int = 25, estado: str | None = None):
     desde = (pagina - 1) * tamanio
     hasta = desde + tamanio - 1
@@ -257,7 +280,10 @@ def get_ots_paginado(pagina: int = 1, tamanio: int = 25, estado: str | None = No
     response = query.range(desde, hasta).execute()
     return response.data, (response.count or 0)
 
-# ----------------- RPC TRANSACCIONALES -----------------
+
+# ============================================================
+# ============ NUEVO: RPC TRANSACCIONALES (INTEGRIDAD) ========
+# ============================================================
 def consumir_repuesto_seguro(ot_id, repuesto_id, cantidad):
     try:
         response = supabase.rpc("consumir_repuesto", {
@@ -271,6 +297,7 @@ def consumir_repuesto_seguro(ot_id, repuesto_id, cantidad):
             raise ValueError("STOCK_INSUFICIENTE")
         raise
 
+
 def tomar_ot_backlog_seguro(ot_id, tecnico_id):
     try:
         response = supabase.rpc("tomar_ot_backlog", {
@@ -283,7 +310,10 @@ def tomar_ot_backlog_seguro(ot_id, tecnico_id):
             raise ValueError("OT_YA_TOMADA")
         raise
 
-# ----------------- PRESUPUESTO DE MANTENIMIENTO -----------------
+
+# ============================================================
+# ============ NUEVO: PRESUPUESTO DE MANTENIMIENTO ============
+# ============================================================
 def get_presupuestos():
     response = supabase.table("presupuestos").select("*").order("periodo", desc=True).execute()
     return response.data
@@ -297,7 +327,10 @@ def guardar_presupuesto(periodo: str, categoria: str, monto: float):
     response = supabase.table("presupuestos").upsert(payload, on_conflict="periodo,categoria").execute()
     return response.data
 
-# ----------------- SOLICITUDES DE COMPRA -----------------
+
+# ============================================================
+# ============ NUEVO: SOLICITUDES DE COMPRA ====================
+# ============================================================
 def get_solicitudes_compra():
     response = supabase.table("solicitudes_compra").select("*").order("fecha_solicitud", desc=True).execute()
     return response.data
@@ -315,6 +348,7 @@ def delete_solicitud_compra(solicitud_id):
     return response.data
 
 def subir_foto_solicitud_compra(solicitud_id, nombre_archivo: str, contenido: bytes, content_type: str):
+    """Sube una foto al bucket 'solicitudes-compra' y devuelve su URL pública."""
     ruta = f"{solicitud_id}/{nombre_archivo}"
     supabase.storage.from_("solicitudes-compra").upload(
         ruta, contenido, {"content-type": content_type, "upsert": "true"}
