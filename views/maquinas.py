@@ -2,20 +2,126 @@ import streamlit as st
 import qrcode
 import json
 from io import BytesIO
-from database.conection import insert_maquina, delete_maquina, get_maquinas, update_maquina, insert_documento, delete_documento, get_documentos, insert_plan, get_planes, insert_actividad, get_actividades
+from database.conection import (
+    supabase, insert_maquina, delete_maquina, get_maquinas, update_maquina,
+    insert_documento, delete_documento, get_documentos,
+    insert_plan, get_planes, insert_actividad, get_actividades
+)
 from datetime import datetime, timedelta
 
 CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
 
 
+def _obtener_url_base_automatica() -> str:
+    """
+    Obtiene la URL pública de la app automáticamente sin que el usuario tenga que
+    escribirla cada vez:
+    1) Primero mira si ya está guardada en session_state o en st.secrets['APP_URL'].
+    2) Si no, intenta detectarla sola desde el navegador (st.context.headers).
+    """
+    if st.session_state.get("app_base_url"):
+        return st.session_state["app_base_url"].rstrip("/")
+
+    url_secret = st.secrets.get("APP_URL", "")
+    if url_secret:
+        return url_secret.rstrip("/")
+
+    try:
+        headers = st.context.headers
+        host = headers.get("Host") or headers.get("X-Forwarded-Host")
+        proto = headers.get("X-Forwarded-Proto", "https")
+        if host and "localhost" not in host and "127.0.0.1" not in host:
+            return f"{proto}://{host}".rstrip("/")
+    except Exception:
+        pass
+
+    return "https://mi-app.streamlit.app"
+
+
 def generar_qr_png(url: str) -> bytes:
-    qr = qrcode.QRCode(box_size=10, border=2)
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=2
+    )
     qr.add_data(url)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
     buf = BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def generar_pdf_etiquetas_qr(maquinas, base_url: str) -> BytesIO:
+    """
+    Genera un PDF listo para imprimir y recortar con las etiquetas QR de Reporte
+    de Fallas (?equipo=ID) de todas las máquinas registradas.
+    """
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1.2 * cm, bottomMargin=1.2 * cm)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("Etiquetas QR de Equipos — Reporte Rápido de Fallas", styles["Title"]))
+    story.append(Paragraph("Escanee el código QR con la cámara del celular para ver la ficha y reportar averías sin iniciar sesión.", styles["Normal"]))
+    story.append(Spacer(1, 14))
+
+    celda_style = ParagraphStyle("CeldaQR", parent=styles["Normal"], fontSize=10, leading=13, alignment=1)
+
+    filas_tabla = []
+    fila_actual = []
+
+    for m in maquinas:
+        url_publica = f"{base_url.rstrip('/')}/?equipo={m.get('id')}"
+        qr_bytes = generar_qr_png(url_publica)
+        img_qr = Image(BytesIO(qr_bytes), width=4.2 * cm, height=4.2 * cm)
+        img_qr.hAlign = "CENTER"
+
+        tag_str = f"<br/><b>Tag:</b> {m.get('tag')}" if m.get("tag") else ""
+        sec_str = f"<br/><font size=8 color='#555555'>{m.get('seccion') or ''}</font>"
+        texto_etiqueta = Paragraph(
+            f"<b>{m.get('nombre')}</b><br/>[{m.get('codigo')}] (ID: {m.get('id')}){tag_str}{sec_str}",
+            celda_style
+        )
+
+        subtabla = Table([[img_qr], [texto_etiqueta]], colWidths=[5.5 * cm])
+        subtabla.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#2A323A")),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+
+        fila_actual.append(subtabla)
+        if len(fila_actual) == 3:
+            filas_tabla.append(fila_actual)
+            fila_actual = []
+
+    if fila_actual:
+        while len(fila_actual) < 3:
+            fila_actual.append("")
+        filas_tabla.append(fila_actual)
+
+    if filas_tabla:
+        tabla_principal = Table(filas_tabla, colWidths=[6.2 * cm, 6.2 * cm, 6.2 * cm])
+        tabla_principal.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+        ]))
+        story.append(tabla_principal)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
 
 def extraer_texto_pdf(archivo_pdf) -> str:
@@ -68,18 +174,57 @@ Texto del manual (puede estar incompleto o truncado):
     except Exception as e:
         return None, f"No se pudo generar el plan: {e}"
 
+
 def render_maquinas():
     st.title("Máquinas")
-    st.write("Inventario base y criticidad operacional.")
+    st.write("Inventario base, criticidad operacional y generación automática de etiquetas QR.")
 
-    with st.expander("⚙️ Configurar URL de la app (para los QR de Recepción/Entrega)"):
-        st.session_state["app_base_url"] = st.text_input(
+    url_detectada = _obtener_url_base_automatica()
+
+    with st.expander("⚙️ URL de los códigos QR (detectada automáticamente) y Catálogo PDF"):
+        nueva_url = st.text_input(
             "URL pública de tu app en Streamlit Cloud",
-            value=st.session_state.get("app_base_url", ""),
-            placeholder="https://tu-app.streamlit.app"
+            value=url_detectada,
+            help="Se detecta sola cuando abrís la app en Streamlit Cloud. Todos los QR usan esta dirección."
         )
-        st.caption("Se necesita una sola vez. Es la URL que ves en el navegador cuando abrís tu app ya desplegada.")
-    
+        st.session_state["app_base_url"] = nueva_url.rstrip("/")
+
+        if st.session_state.maquinas:
+            pdf_qrs = generar_pdf_etiquetas_qr(st.session_state.maquinas, st.session_state["app_base_url"])
+            st.download_button(
+                "🖨️ Descargar Plancha PDF con TODOS los QR de Reporte de Fallas (Listo para Imprimir)",
+                data=pdf_qrs,
+                file_name=f"Etiquetas_QR_Maquinas_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+
+    base_url = st.session_state.get("app_base_url") or url_detectada
+
+    # --- MOSTRAR EL QR RECIÉN CREADO AUTOMÁTICAMENTE SI SE ACABA DE DAR DE ALTA UNA MÁQUINA ---
+    maquina_recien_creada = st.session_state.get("maquina_recien_creada")
+    if maquina_recien_creada:
+        url_qr_nuevo = f"{base_url.rstrip('/')}/?equipo={maquina_recien_creada.get('id')}"
+        qr_bytes_nuevo = generar_qr_png(url_qr_nuevo)
+        st.success(f"✅ Máquina **{maquina_recien_creada.get('nombre')}** creada con éxito. Su código QR se generó automáticamente:")
+        col_qr_img, col_qr_info = st.columns([0.25, 0.75])
+        with col_qr_img:
+            st.image(qr_bytes_nuevo, width=160)
+        with col_qr_info:
+            st.markdown(f"**Equipo:** {maquina_recien_creada.get('nombre')} (`{maquina_recien_creada.get('codigo')}`)")
+            st.markdown(f"**Link directo para reportar fallas:** `{url_qr_nuevo}`")
+            st.download_button(
+                "⬇️ Descargar Etiqueta QR (PNG)",
+                data=qr_bytes_nuevo,
+                file_name=f"QR_Fallas_{maquina_recien_creada.get('codigo')}_{maquina_recien_creada.get('id')}.png",
+                mime="image/png",
+                key="dl_qr_recien_creada"
+            )
+            if st.button("✖️ Cerrar aviso", key="cerrar_aviso_qr"):
+                del st.session_state["maquina_recien_creada"]
+                st.rerun()
+        st.markdown("---")
+
     # Formulario desplegable mediante checkbox de Streamlit
     if st.checkbox("+ Nueva Máquina"):
         with st.form("form_nueva_maquina", clear_on_submit=True):
@@ -92,8 +237,8 @@ def render_maquinas():
                 "Costo por Hora de Parada (Gs.)", min_value=0, step=1000, value=0,
                 help="Lucro cesante: cuánto cuesta cada hora que esta máquina está parada."
             )
-            
-            submit = st.form_submit_button("Guardar Máquina")
+
+            submit = st.form_submit_button("Guardar Máquina y Generar QR Automático")
             if submit:
                 if not nombre.strip() or not codigo.strip():
                     st.error("El nombre y el código de la máquina son obligatorios.")
@@ -107,9 +252,10 @@ def render_maquinas():
                         "criticidad": criticidad,
                         "costo_hora_parada": costo_hora_parada
                     }
-                    insert_maquina(payload)
+                    creada = insert_maquina(payload)
                     st.session_state.maquinas = get_maquinas()
-                    st.success(f"Máquina '{nombre}' guardada con éxito.")
+                    if creada:
+                        st.session_state["maquina_recien_creada"] = creada[0]
                     st.rerun()
 
     # Listado en Interfaz Industrial
@@ -207,22 +353,38 @@ def render_maquinas():
                             st.success("✅ Documento adjuntado.")
                             st.rerun()
 
-            # --- QR PARA RECEPCIÓN / ENTREGA DESDE LA MÁQUINA ---
-            with st.expander("📱 Código QR de Recepción / Entrega"):
-                base_url = st.session_state.get("app_base_url", "")
-                if not base_url:
-                    st.warning("Configurá la URL de tu app arriba (⚙️ Configurar URL) para poder generar el QR.")
-                else:
-                    url_qr = f"{base_url.rstrip('/')}/?maquina_id={m.get('id')}&vista=checklist"
-                    qr_bytes = generar_qr_png(url_qr)
-                    st.image(qr_bytes, caption=f"Escanear para Recepción/Entrega de {m.get('nombre')}", width=200)
-                    st.code(url_qr, language=None)
+            # --- CÓDIGOS QR AUTOMÁTICOS (REPORTE DE FALLAS SIN LOGIN + CHECKLIST DE TURNO) ---
+            with st.expander(f"📱 Códigos QR de {m.get('nombre')} (Listos para descargar)"):
+                c_qr1, c_qr2 = st.columns(2)
+
+                with c_qr1:
+                    st.markdown("**🚨 QR Público — Reportar Falla (Sin Login)**")
+                    st.caption("Pegar en la máquina: abre la ficha pública y permite reportar averías desde cualquier celular.")
+                    url_qr_falla = f"{base_url.rstrip('/')}/?equipo={m.get('id')}"
+                    qr_bytes_falla = generar_qr_png(url_qr_falla)
+                    st.image(qr_bytes_falla, width=180)
+                    st.code(url_qr_falla, language=None)
                     st.download_button(
-                        "⬇️ Descargar QR (PNG)",
-                        data=qr_bytes,
-                        file_name=f"QR_{m.get('codigo')}.png",
+                        "⬇️ Descargar QR de Reporte de Fallas (PNG)",
+                        data=qr_bytes_falla,
+                        file_name=f"QR_Fallas_{m.get('codigo')}_{m.get('id')}.png",
                         mime="image/png",
-                        key=f"dl_qr_{m.get('id')}"
+                        key=f"dl_qr_falla_{m.get('id')}"
+                    )
+
+                with c_qr2:
+                    st.markdown("**📋 QR Interno — Recepción / Entrega de Turno**")
+                    st.caption("Para técnicos/inspectores logueados: salta directo al formulario de checklist de la máquina.")
+                    url_qr_chk = f"{base_url.rstrip('/')}/?maquina_id={m.get('id')}&vista=checklist"
+                    qr_bytes_chk = generar_qr_png(url_qr_chk)
+                    st.image(qr_bytes_chk, width=180)
+                    st.code(url_qr_chk, language=None)
+                    st.download_button(
+                        "⬇️ Descargar QR de Checklist (PNG)",
+                        data=qr_bytes_chk,
+                        file_name=f"QR_Checklist_{m.get('codigo')}_{m.get('id')}.png",
+                        mime="image/png",
+                        key=f"dl_qr_chk_{m.get('id')}"
                     )
 
             # --- GENERAR PLAN PREVENTIVO CON IA A PARTIR DEL MANUAL ---
@@ -278,9 +440,6 @@ def render_maquinas():
                     )
                     if st.button("✅ Cargar estas tareas al Plan Preventivo", key=f"cargar_ia_{m.get('id')}"):
                         hoy = datetime.now().date()
-                        # Agrupamos por frecuencia: todas las tareas con la misma
-                        # frecuencia recomendada por el fabricante forman UN plan
-                        # con varias actividades, en vez de una fila suelta cada una.
                         grupos_por_frecuencia = {}
                         for t in tareas_editadas:
                             if not t.get("tarea") or not t.get("frecuencia_dias"):
