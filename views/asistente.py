@@ -131,7 +131,7 @@ def generar_resumen_ia(tareas):
 
     genai.configure(api_key=api_key)
     # Revisá en Google AI Studio si hay un modelo más nuevo disponible; este es el rápido/económico.
-    modelo = genai.GenerativeModel("gemini-2.0-flash")
+    modelo = genai.GenerativeModel(st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash"))
 
     lista_texto = "\n".join([f"- [{t['categoria']}] {t['texto']}" for t in tareas]) or "Sin pendientes."
 
