@@ -26,6 +26,7 @@ from views.vista_publica import render_vista_publica  # NUEVO: ficha + reporte p
 from views.solicitudes_falla import render_solicitudes_falla  # NUEVO: bandeja de reportes QR (admin)
 from views.solicitudes_compra import render_solicitudes_compra  # NUEVO: solicitud de compra a Compras
 from views.comparativo_cotizaciones import render_comparativo_cotizaciones  # NUEVO: comparar cotizaciones + informe técnico
+from views.programacion import render_programacion  # NUEVO: programar fechas de preventivos y ver la carga
 from datetime import datetime
 
 # Configuración de página
@@ -228,7 +229,7 @@ with st.sidebar:
     # Menú distinto según el rol del usuario logueado
     if rol == "admin":
         opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
-                          lbl_fallas, lbl_solicitudes_qr, "🛒 Solicitud de Compra", "⚖️ Comparativo de Cotizaciones", "Recepción / Entrega", lbl_terceros, lbl_planes,
+                          lbl_fallas, lbl_solicitudes_qr, "🛒 Solicitud de Compra", "⚖️ Comparativo de Cotizaciones", "Recepción / Entrega", lbl_terceros, lbl_planes, "📆 Programación de Preventivos",
                           "📅 Calendario Preventivo", "👷 Técnicos", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
         opciones_menu = ["Panel General", "💰 Presupuesto", "📑 Reportes"]
@@ -285,6 +286,8 @@ elif "Recepción" in opcion:
     render_checklists()
 elif "Terceros" in opcion:
     render_terceros()
+elif "Programación de Preventivos" in opcion:
+    render_programacion(usuario)  # NUEVO: programar fechas de preventivos y ver la carga
 elif "Plan Preventivo" in opcion:
     render_planes()
 elif "Calendario Preventivo" in opcion:
