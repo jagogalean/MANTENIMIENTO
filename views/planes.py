@@ -3,25 +3,8 @@ from datetime import datetime, timedelta
 from database.conection import (
     insert_plan, update_plan, delete_plan, get_planes,
     insert_actividad, delete_actividad, get_actividades,
-    insert_plan_ejecucion, get_plan_ejecuciones,
-    insert_ot, get_ots
+    insert_plan_ejecucion, get_plan_ejecuciones
 )
-
-
-def _generar_codigo_ot(ots):
-    """Genera el siguiente código consecutivo del año en curso. Ej: OT-2026-0007"""
-    year = datetime.now().year
-    prefijo = f"OT-{year}-"
-    consecutivos = []
-    for o in ots:
-        cod = o.get("codigo", "") or ""
-        if cod.startswith(prefijo):
-            try:
-                consecutivos.append(int(cod.replace(prefijo, "")))
-            except ValueError:
-                pass
-    siguiente = max(consecutivos) + 1 if consecutivos else 1
-    return f"{prefijo}{siguiente:04d}"
 
 
 def render_planes():
@@ -121,16 +104,26 @@ def render_planes():
         elif proxima_semana:
             color = "#F59E0B"
             estado_txt = f"🟠 Vence en {(fecha_prox - hoy).days} día(s)"
+        elif fecha_prox is None:
+            color = "#7C8894"
+            estado_txt = "⚪ Sin fecha asignada (programala en 📆 Programación de Preventivos)"
         else:
             color = "#38BDF8"
             estado_txt = f"🟢 Programado para {p.get('proxima_ejecucion')}"
 
         acts_del_plan = actividades_por_plan.get(p.get("id"), [])
+        extra_txt = ""
+        if p.get("tipo") and p.get("tipo") != "Mantenimiento":
+            extra_txt += f" · {p.get('tipo')}"
+        if p.get("horas_hombre"):
+            extra_txt += f" · {float(p.get('horas_hombre')):.1f} HH"
+        if p.get("costo_estimado"):
+            extra_txt += f" · Gs. {float(p.get('costo_estimado')):,.0f} por ejecución".replace(",", ".")
 
         st.markdown(f"""
         <div class='industrial-panel' style='border-color:{color};'>
             <strong>{dict_m_nombre.get(p.get('maquina_id'), 'Máquina desconocida')}</strong> — {p.get('nombre_plan')}<br>
-            <span style='color:{color}; font-weight:bold;'>{estado_txt}</span> · Cada {p.get('frecuencia_dias')} días · {len(acts_del_plan)} actividad(es)
+            <span style='color:{color}; font-weight:bold;'>{estado_txt}</span> · Cada {p.get('frecuencia_dias')} días · {len(acts_del_plan)} actividad(es){extra_txt}
         </div>
         """, unsafe_allow_html=True)
 
@@ -155,32 +148,19 @@ def render_planes():
                     st.session_state.plan_actividades = get_actividades()
                     st.rerun()
 
-        col_ot, col_exec, col_del = st.columns(3)
-        with col_ot:
-            if st.button("🛠️ Generar OT Preventiva", key=f"gen_ot_plan_{p.get('id')}"):
-                lista_acts = "\n".join([f"- {a.get('actividad')}" for a in acts_del_plan])
-                desc_ot = f"[Preventivo: {p.get('nombre_plan')}]\nActividades programadas:\n{lista_acts}"
-                todas_las_ots = get_ots()
-                codigo_ot = _generar_codigo_ot(todas_las_ots)
-                
-                insert_ot({
-                    "codigo": codigo_ot,
-                    "maquina_id": p.get("maquina_id"),
-                    "tipo_mantenimiento": "Preventivo",
-                    "descripcion": desc_ot,
-                    "estado": "Pendiente",
-                    "fecha_inicio": datetime.now().isoformat(),
-                    "fecha_fin": None,
-                    "horas_paro": 0,
-                    "tecnico_id": None,
-                    "costo_mano_obra": 0,
-                    "plan_id": p.get("id")
-                })
-                st.session_state.ots = get_ots()
-                st.success(f"✅ Se generó la Orden de Trabajo **{codigo_ot}** para este preventivo. Ya aparece en el Backlog.")
-        with col_exec:
-            if st.button("✅ Marcar Plan Ejecutado", key=f"exec_plan_{p.get('id')}"):
-                nueva_prox = hoy + timedelta(days=p.get("frecuencia_dias", 30))
+        col_e, col_d = st.columns(2)
+        with col_e:
+            if st.button("✅ Marcar Plan Ejecutado (todas sus actividades)", key=f"exec_plan_{p.get('id')}"):
+                # La próxima fecha sigue la cadencia que programaste (fecha programada + frecuencia), no "hoy + frecuencia":
+                # así un atraso o un adelanto no desordena el calendario repartido. Si se atrasó varios ciclos, salta los vencidos.
+                frecuencia = int(p.get("frecuencia_dias") or 30)
+                try:
+                    base = datetime.strptime(p.get("proxima_ejecucion"), "%Y-%m-%d").date()
+                except (TypeError, ValueError):
+                    base = hoy
+                nueva_prox = base + timedelta(days=frecuencia)
+                while nueva_prox <= hoy:
+                    nueva_prox += timedelta(days=frecuencia)
                 insert_plan_ejecucion({
                     "plan_id": p.get("id"),
                     "maquina_id": p.get("maquina_id"),
@@ -194,8 +174,8 @@ def render_planes():
                 st.session_state.planes = get_planes()
                 st.session_state.plan_ejecuciones = get_plan_ejecuciones()
                 st.rerun()
-        with col_del:
-            if st.button("🗑️ Eliminar Plan", key=f"del_plan_{p.get('id')}"):
+        with col_d:
+            if st.button("🗑️ Eliminar Plan (y sus actividades)", key=f"del_plan_{p.get('id')}"):
                 delete_plan(p.get("id"))
                 st.session_state.planes = get_planes()
                 st.session_state.plan_actividades = get_actividades()
