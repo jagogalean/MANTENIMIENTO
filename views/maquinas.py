@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
 
 
+@st.cache_data(show_spinner=False)
 def generar_qr_png(url: str) -> bytes:
     qr = qrcode.QRCode(box_size=10, border=2)
     qr.add_data(url)
@@ -73,13 +74,17 @@ def render_maquinas():
     st.title("Máquinas")
     st.write("Inventario base y criticidad operacional.")
 
-    with st.expander("⚙️ Configurar URL de la app (para los QR de Recepción/Entrega)"):
+    with st.expander("⚙️ Configurar URL de la app (para los QR)"):
         st.session_state["app_base_url"] = st.text_input(
             "URL pública de tu app en Streamlit Cloud",
-            value=st.session_state.get("app_base_url", ""),
+            value=st.session_state.get("app_base_url") or st.secrets.get("APP_BASE_URL", ""),
             placeholder="https://tu-app.streamlit.app"
         )
-        st.caption("Se necesita una sola vez. Es la URL que ves en el navegador cuando abrís tu app ya desplegada.")
+        st.caption(
+            "Es la URL que ves en el navegador cuando abrís tu app ya desplegada. Lo que escribís acá se pierde al "
+            "recargar o reiniciar la app: para que quede fija, agregala en los secrets como "
+            "APP_BASE_URL = \"https://tu-app.streamlit.app\"."
+        )
     
     # Formulario desplegable mediante checkbox de Streamlit
     if st.checkbox("+ Nueva Máquina"):
@@ -226,6 +231,24 @@ def render_maquinas():
                         file_name=f"QR_{m.get('codigo')}.png",
                         mime="image/png",
                         key=f"dl_qr_{m.get('id')}"
+                    )
+
+            # --- QR PARA REPORTAR FALLAS (público: no pide iniciar sesión) ---
+            with st.expander("🚨 Código QR para reportar fallas (sin iniciar sesión)"):
+                base_url_fallas = st.session_state.get("app_base_url", "")
+                if not base_url_fallas:
+                    st.warning("Configurá la URL de tu app arriba (⚙️ Configurar URL) para poder generar el QR.")
+                else:
+                    url_falla = f"{base_url_fallas.rstrip('/')}/?equipo={m.get('id')}"
+                    qr_falla = generar_qr_png(url_falla)
+                    st.image(qr_falla, caption=f"Escanear para reportar una falla de {m.get('nombre')}", width=200)
+                    st.code(url_falla, language=None)
+                    st.download_button(
+                        "⬇️ Descargar QR (PNG)",
+                        data=qr_falla,
+                        file_name=f"QR_FALLAS_{m.get('codigo')}.png",
+                        mime="image/png",
+                        key=f"dl_qr_falla_{m.get('id')}"
                     )
 
             # --- GENERAR PLAN PREVENTIVO CON IA A PARTIR DEL MANUAL ---
