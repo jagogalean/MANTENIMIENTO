@@ -1,3 +1,4 @@
+import html
 import streamlit as st
 import qrcode
 import json
@@ -122,11 +123,13 @@ def render_maquinas():
             with col_info:
                 costo_parada_fmt = f"{m.get('costo_hora_parada', 0) or 0:,.0f}".replace(",", ".")
                 tag_txt = f" <small style='color:#F2A93B;'>Tag: {m.get('tag')}</small>" if m.get("tag") else ""
+                desc_txt = (f"<br><small style='color:#7C8894;'>{html.escape(str(m.get('descripcion')))}</small>"
+                            if m.get("descripcion") else "")
                 st.markdown(f"""
                 <div class='industrial-panel'>
                     <strong>{m.get('nombre')}</strong> <small style='color:#38BDF8;'>[{m.get('codigo')}]</small>{tag_txt} — 
                     <small style='color:#7C8894;'>{m.get('seccion') or 'sin sección'}</small><br>
-                    <span>Criticidad: {CRIT_LABELS.get(m.get('criticidad'), m.get('criticidad'))} · Costo Hora de Parada: Gs. {costo_parada_fmt}</span>
+                    <span>Criticidad: {CRIT_LABELS.get(m.get('criticidad'), m.get('criticidad'))} · Costo Hora de Parada: Gs. {costo_parada_fmt}</span>{desc_txt}
                 </div>
                 """, unsafe_allow_html=True)
             with col_action:
