@@ -183,7 +183,7 @@ def render_terceros():
     if con_trabajos:
         _resumen_superior(mapa, trabajos, facturas, pagos)
 
-    tabs = st.tabs(["📒 Proveedores", "🧾 Trabajos", "💳 Cuentas por pagar", "📅 Servicios programados"])
+    tabs = st.tabs(["📒 Proveedores", "🧾 Trabajos", "🗂️ Archivos", "💳 Cuentas por pagar", "📅 Servicios programados"])
     with tabs[0]:
         _tab_proveedores(terceros, trabajos)
     with tabs[1]:
@@ -193,10 +193,15 @@ def render_terceros():
             st.info("Disponible después de correr el SQL.")
     with tabs[2]:
         if con_trabajos:
-            _tab_cuentas(mapa, trabajos, facturas, pagos)
+            _tab_archivos(mapa, trabajos, facturas, pagos, docs)
         else:
             st.info("Disponible después de correr el SQL.")
     with tabs[3]:
+        if con_trabajos:
+            _tab_cuentas(mapa, trabajos, facturas, pagos)
+        else:
+            st.info("Disponible después de correr el SQL.")
+    with tabs[4]:
         _tab_servicios(terceros, mapa_maquinas, trabajos)
 
 
@@ -660,7 +665,108 @@ def _detalle_trabajo(t, r, facturas_t, pagos_t, docs_t, todos_docs, terceros, ma
 
 
 # ----------------------------------------------------------------
-# 3. Cuentas por pagar
+# 3. Archivos (todos los presupuestos, facturas y comprobantes juntos)
+# ----------------------------------------------------------------
+ARCHIVOS_POR_PAGINA = 12
+ICONO_TIPO = {"Presupuesto": "📝", "Factura": "🧾", "Comprobante de pago": "💳", "Informe del proveedor": "📋", "Otro": "📎"}
+
+
+def filtrar_documentos(docs, trabajos_por_id, mapa, empresa="Todos", tipo="Todos", trabajo="Todos", texto="", desde=None, hasta=None):
+    """Documentos más nuevos primero, filtrados por proveedor, tipo, trabajo, texto (nombre del archivo o descripción) y fechas."""
+    palabras = str(texto or "").casefold().split()
+    resultado = []
+    for d in sorted(docs, key=lambda x: x["id"], reverse=True):
+        t = trabajos_por_id.get(d["trabajo_id"], {})
+        emp = _texto(mapa.get(t.get("tercero_id"), {}).get("contacto")) or "Sin proveedor"
+        if empresa != "Todos" and emp != empresa:
+            continue
+        if tipo != "Todos" and d.get("tipo") != tipo:
+            continue
+        if trabajo != "Todos" and t.get("codigo") != trabajo:
+            continue
+        subido = L.a_fecha(d.get("fecha_subida"))
+        if desde and (not subido or subido < desde):
+            continue
+        if hasta and (not subido or subido > hasta):
+            continue
+        pajar = f"{d.get('archivo_nombre')} {t.get('descripcion')} {t.get('codigo')} {emp}".casefold()
+        if all(p in pajar for p in palabras):
+            resultado.append(d)
+    return resultado
+
+
+def _tab_archivos(mapa, trabajos, facturas, pagos, docs):
+    if not docs:
+        st.info("Todavía no hay archivos cargados. Los presupuestos, facturas y comprobantes que subas en cada trabajo aparecen acá.")
+        return
+    trabajos_por_id = {t["id"]: t for t in trabajos}
+    num_fact = {f["id"]: f.get("numero") or "s/n" for f in facturas}
+    fecha_pago = {p["id"]: L.a_fecha(p.get("fecha_pago")) for p in pagos}
+    conteo = {}
+    for d in docs:
+        conteo[d["tipo"]] = conteo.get(d["tipo"], 0) + 1
+    st.caption(f"{len(docs)} archivo(s) en total · " + " · ".join(f"{ICONO_TIPO.get(k, '')} {k}: {v}" for k, v in sorted(conteo.items())))
+
+    f1, f2, f3, f4 = st.columns(4)
+    empresas = sorted({_texto(mapa.get(t["tercero_id"], {}).get("contacto")) or "Sin proveedor" for t in trabajos}, key=str.casefold)
+    f_emp = f1.selectbox("Proveedor", ["Todos"] + empresas, key="arch_f_emp")
+    f_tipo = f2.selectbox("Tipo", ["Todos"] + L.TIPOS_DOC, key="arch_f_tipo")
+    f_trab = f3.selectbox("Trabajo", ["Todos"] + sorted({t["codigo"] for t in trabajos if t.get("codigo")}, reverse=True), key="arch_f_trab")
+    f_txt = f4.text_input("Buscar", placeholder="nombre del archivo o descripción", key="arch_f_txt")
+    g1, g2 = st.columns(2)
+    f_desde = g1.date_input("Subidos desde", value=None, format="DD/MM/YYYY", key="arch_f_desde")
+    f_hasta = g2.date_input("Subidos hasta", value=None, format="DD/MM/YYYY", key="arch_f_hasta")
+
+    resultado = filtrar_documentos(docs, trabajos_por_id, mapa, f_emp, f_tipo, f_trab, f_txt, f_desde, f_hasta)
+    if not resultado:
+        st.warning("No hay archivos con esos filtros.")
+        return
+    paginas = max(1, -(-len(resultado) // ARCHIVOS_POR_PAGINA))
+    pagina = int(st.number_input(f"Página (de {paginas})", min_value=1, max_value=paginas, value=1, step=1, key="arch_pagina")) if paginas > 1 else 1
+    visibles = resultado[(pagina - 1) * ARCHIVOS_POR_PAGINA: pagina * ARCHIVOS_POR_PAGINA]
+    st.caption(f"{len(resultado)} archivo(s) con estos filtros · mostrando {len(visibles)}")
+
+    clave = "arch_links"
+    if st.button("🖼️ Cargar vistas previas y enlaces de esta página (válidos 1 hora)", key="arch_ver"):
+        enlaces = {}
+        for d in visibles:
+            try:
+                enlaces[d["id"]] = db.url_firmada(d["archivo_path"])
+            except Exception:
+                enlaces[d["id"]] = None
+        st.session_state[clave] = enlaces
+    enlaces = st.session_state.get(clave, {})
+
+    for fila in range(0, len(visibles), 4):
+        cols = st.columns(4)
+        for col, d in zip(cols, visibles[fila:fila + 4]):
+            t = trabajos_por_id.get(d["trabajo_id"], {})
+            emp = _texto(mapa.get(t.get("tercero_id"), {}).get("contacto")) or "Sin proveedor"
+            detalle = ""
+            if d.get("factura_id") in num_fact:
+                detalle = f" · factura {num_fact[d['factura_id']]}"
+            elif fecha_pago.get(d.get("pago_id")):
+                detalle = f" · pago del {fecha_pago[d['pago_id']]:%d/%m/%Y}"
+            subido = L.a_fecha(d.get("fecha_subida"))
+            nombre = str(d.get("archivo_nombre") or "")
+            url = enlaces.get(d["id"])
+            with col:
+                if url and nombre.lower().endswith((".jpg", ".jpeg", ".png")):
+                    st.image(url, width=220)
+                elif url:
+                    st.markdown(f"[📄 Abrir PDF]({url})")
+                else:
+                    st.markdown(f"<div style='font-size:2.2rem; text-align:center;'>{'📄' if nombre.lower().endswith('.pdf') else '🖼️'}</div>", unsafe_allow_html=True)
+                st.markdown(f"**{ICONO_TIPO.get(d['tipo'], '')} {d['tipo']}**{detalle}")
+                st.caption(f"{emp} · {t.get('codigo') or '—'}" + (f" · {subido:%d/%m/%Y}" if subido else ""))
+                if url:
+                    st.markdown(f"[{nombre}]({url})")
+                else:
+                    st.caption(nombre)
+
+
+# ----------------------------------------------------------------
+# 4. Cuentas por pagar
 # ----------------------------------------------------------------
 def _tab_cuentas(mapa, trabajos, facturas, pagos):
     c = L.cuentas_por_pagar(mapa, trabajos, facturas, pagos)
@@ -700,7 +806,7 @@ def _tab_cuentas(mapa, trabajos, facturas, pagos):
 
 
 # ----------------------------------------------------------------
-# 4. Servicios programados (planes tercerizados)
+# 5. Servicios programados (planes tercerizados)
 # ----------------------------------------------------------------
 def _tab_servicios(terceros, mapa_maquinas, trabajos):
     planes = [p for p in st.session_state.get("planes", []) if p.get("tipo") == "Tercerizado"]
