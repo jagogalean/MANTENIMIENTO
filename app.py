@@ -28,6 +28,7 @@ from views.solicitudes_compra import render_solicitudes_compra  # NUEVO: solicit
 from views.comparativo_cotizaciones import render_comparativo_cotizaciones  # NUEVO: comparar cotizaciones + informe técnico
 from views.programacion import render_programacion  # NUEVO: programar fechas de preventivos y ver la carga
 from views.asistencia import render_asistencia  # NUEVO: asistencia y horas extras del personal
+from views.productividad import render_productividad  # NUEVO: productividad (carga por logística + indicadores)
 from datetime import datetime
 
 # Configuración de página
@@ -231,9 +232,12 @@ with st.sidebar:
     if rol == "admin":
         opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
                           lbl_fallas, lbl_solicitudes_qr, "🛒 Solicitud de Compra", "⚖️ Comparativo de Cotizaciones", "Recepción / Entrega", lbl_terceros, lbl_planes, "📆 Programación de Preventivos",
-                          "📅 Calendario Preventivo", "👷 Técnicos", "🕒 Asistencia y Horas Extras", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
+                          "📅 Calendario Preventivo", "👷 Técnicos", "🕒 Asistencia y Horas Extras", "🏭 Productividad", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
-        opciones_menu = ["Panel General", "💰 Presupuesto", "📑 Reportes"]
+        opciones_menu = ["Panel General", "🏭 Productividad", "💰 Presupuesto", "📑 Reportes"]
+    elif rol == "logistica":
+        # NUEVO: rol Logística — carga la producción por turno y ve los registros e indicadores. Nada más.
+        opciones_menu = ["🏭 Productividad"]
     elif rol == "operador":
         # NUEVO: rol Operador/Reportador — solo puede reportar fallas,
         # que caen automáticamente al backlog compartido de mantenimiento.
@@ -295,6 +299,8 @@ elif "Calendario Preventivo" in opcion:
     render_calendario()
 elif "Asistencia y Horas Extras" in opcion:
     render_asistencia(usuario)  # NUEVO: asistencia y horas extras del personal
+elif "Productividad" in opcion:
+    render_productividad(usuario)  # NUEVO: productividad (carga por logística + indicadores)
 elif "Técnicos" in opcion:
     render_tecnicos()
 elif "Reportes" in opcion:
