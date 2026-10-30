@@ -1,4 +1,5 @@
 import html
+import unicodedata
 import streamlit as st
 import qrcode
 import json
@@ -7,6 +8,28 @@ from database.conection import insert_maquina, delete_maquina, get_maquinas, upd
 from datetime import datetime, timedelta
 
 CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
+LIMITE_RESULTADOS = 25
+
+
+def _normalizar(texto):
+    """Minúsculas y sin tildes: 'Cañón' y 'canon' se encuentran entre sí."""
+    base = unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode("ascii")
+    return base.casefold()
+
+
+def buscar_maquinas(maquinas, texto="", seccion="Todas", criticidad="Todas"):
+    """Máquinas que cumplen el texto (todas las palabras, en nombre, código, tag, sección, línea o descripción), la sección y la criticidad."""
+    palabras = _normalizar(texto).split()
+    resultado = []
+    for m in maquinas:
+        if seccion != "Todas" and (m.get("seccion") or "—") != seccion:
+            continue
+        if criticidad != "Todas" and m.get("criticidad") != criticidad:
+            continue
+        pajar = _normalizar(" ".join(str(m.get(c) or "") for c in ("nombre", "codigo", "tag", "seccion", "linea", "descripcion")))
+        if all(p in pajar for p in palabras):
+            resultado.append(m)
+    return resultado
 
 
 @st.cache_data(show_spinner=False)
@@ -123,7 +146,32 @@ def render_maquinas():
     if not st.session_state.maquinas:
         st.info("Todavía no has cargado ninguna máquina.")
     else:
-        for m in st.session_state.maquinas:
+        todas = st.session_state.maquinas
+        b1, b2, b3 = st.columns([0.5, 0.25, 0.25])
+        texto_busqueda = b1.text_input("🔍 Buscar máquina", placeholder="nombre, código, tag, sección o descripción", key="maq_buscar")
+        secciones = sorted({(m.get("seccion") or "—") for m in todas}, key=str.casefold)
+        f_seccion = b2.selectbox("Sección", ["Todas"] + secciones, key="maq_f_seccion")
+        f_crit = b3.selectbox("Criticidad", ["Todas", "A", "B", "C"], key="maq_f_crit",
+                              format_func=lambda x: "Todas" if x == "Todas" else CRIT_LABELS[x])
+        ver_todas = st.checkbox(f"Mostrar todas las máquinas ({len(todas)})", key="maq_ver_todas")
+        hay_filtro = bool(texto_busqueda.strip()) or f_seccion != "Todas" or f_crit != "Todas"
+        if not hay_filtro and not ver_todas:
+            por_seccion = {}
+            for m in todas:
+                por_seccion[m.get("seccion") or "—"] = por_seccion.get(m.get("seccion") or "—", 0) + 1
+            st.info(f"Hay {len(todas)} máquinas cargadas. Escribí en el buscador (o elegí una sección o criticidad) para ver su ficha.")
+            st.caption("Por sección: " + " · ".join(f"{k} ({v})" for k, v in sorted(por_seccion.items(), key=lambda kv: kv[0].casefold())))
+            maquinas_a_mostrar = []
+        else:
+            coincidencias = buscar_maquinas(todas, texto_busqueda, f_seccion, f_crit)
+            if not coincidencias:
+                st.warning("No se encontró ninguna máquina con esa búsqueda.")
+            elif len(coincidencias) > LIMITE_RESULTADOS and not ver_todas:
+                st.caption(f"{len(coincidencias)} resultados. Se muestran los primeros {LIMITE_RESULTADOS}: afiná la búsqueda o tildá «Mostrar todas».")
+            else:
+                st.caption(f"{len(coincidencias)} resultado(s).")
+            maquinas_a_mostrar = coincidencias if ver_todas else coincidencias[:LIMITE_RESULTADOS]
+        for m in maquinas_a_mostrar:
             col_info, col_action = st.columns([0.85, 0.15])
             with col_info:
                 costo_parada_fmt = f"{m.get('costo_hora_parada', 0) or 0:,.0f}".replace(",", ".")
