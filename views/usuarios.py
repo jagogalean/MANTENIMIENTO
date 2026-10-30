@@ -1,8 +1,8 @@
 import streamlit as st
 from database.conection import get_usuarios, insert_usuario, delete_usuario
 
-# NUEVO: se agregó "operador" a la lista de roles disponibles.
-ROLES = ["admin", "gerente", "tecnico", "operador"]
+# Roles disponibles. "operador" solo reporta fallas; "logistica" carga y ve Productividad (nada más).
+ROLES = ["admin", "gerente", "tecnico", "operador", "logistica"]
 
 
 def render_usuarios():
@@ -19,7 +19,8 @@ def render_usuarios():
         with st.form("form_nuevo_usuario", clear_on_submit=True):
             uid = st.text_input("UID de Supabase Auth *", placeholder="Ej: 3fa85f64-5717-4562-b3fc-2c963f66afa6")
             nombre = st.text_input("Nombre para mostrar *")
-            rol = st.selectbox("Rol", ROLES)
+            rol = st.selectbox("Rol", ROLES, help="admin: todo · gerente: paneles, reportes y productividad (solo mira) · tecnico: sus OTs · "
+                                                   "operador: reporta fallas · logistica: carga y ve Productividad")
             dict_tec = {t["nombre"]: t["id"] for t in tecnicos}
             tecnico_sel = st.selectbox("Vincular a Técnico (solo si el rol es 'tecnico')", ["Ninguno"] + list(dict_tec.keys()))
 
