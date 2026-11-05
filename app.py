@@ -29,7 +29,38 @@ from views.comparativo_cotizaciones import render_comparativo_cotizaciones  # NU
 from views.programacion import render_programacion  # NUEVO: programar fechas de preventivos y ver la carga
 from views.asistencia import render_asistencia  # NUEVO: asistencia y horas extras del personal
 from views.productividad import render_productividad  # NUEVO: productividad (carga por logística + indicadores)
-from views.asistencia_consulta import render_asistencia_consulta  # NUEVO: asistencia de solo lectura (sin salarios)
+try:
+    from views.asistencia_consulta import render_asistencia_consulta  # NUEVO: asistencia de solo lectura (sin salarios)
+except ImportError as _error_consulta:
+    # Si el archivo views/asistencia_consulta.py no está (o quedó con otro nombre o en otra carpeta), la app SIGUE funcionando:
+    # solo esa opción del menú avisa qué falta, en vez de tirar abajo toda la aplicación.
+    _motivo_consulta = str(_error_consulta)
+
+    def render_asistencia_consulta(usuario):
+        st.title("🕒 Asistencia (consulta)")
+        st.error("Falta el archivo «asistencia_consulta.py» dentro de la carpeta «views» de tu repositorio, o está con otro nombre. "
+                 "Tiene que llamarse exactamente views/asistencia_consulta.py (todo en minúscula, con guion bajo).")
+        st.code(_motivo_consulta)
+
+# NUEVO: rutinas del operador (rondas con QR). Si falta algún archivo, la app SIGUE funcionando: solo esa parte avisa qué falta.
+try:
+    from views.rutinas import render_rutinas
+except ImportError as _error_rutinas:
+    _motivo_rutinas = str(_error_rutinas)
+
+    def render_rutinas(usuario):
+        st.title("📋 Rutinas del Operador")
+        st.error("Faltan archivos de las rutinas en tu repositorio (views/rutinas.py y los archivos database/rutinas_*.py). Detalle:")
+        st.code(_motivo_rutinas)
+try:
+    from views.ronda_publica import render_ronda_publica
+except ImportError as _error_ronda:
+    _motivo_ronda = str(_error_ronda)
+
+    def render_ronda_publica(zona_id):
+        st.title("📋 Ronda")
+        st.error("Esta página todavía no está instalada. Avisale al administrador.")
+        st.code(_motivo_ronda)
 from datetime import datetime
 
 # Configuración de página
@@ -86,6 +117,12 @@ if equipo_qr_id and not st.session_state.get("forzar_login_admin"):
     except (TypeError, ValueError):
         equipo_id_normalizado = equipo_qr_id
     render_vista_publica(equipo_id_normalizado)
+    st.stop()
+
+# NUEVO: ronda del operador (QR de una zona, sin iniciar sesión en la app; el operador se identifica con su PIN).
+ronda_qr_id = st.query_params.get("ronda")
+if ronda_qr_id and not st.session_state.get("forzar_login_admin"):
+    render_ronda_publica(ronda_qr_id)
     st.stop()
 
 # ============================================================
@@ -233,9 +270,9 @@ with st.sidebar:
     if rol == "admin":
         opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
                           lbl_fallas, lbl_solicitudes_qr, "🛒 Solicitud de Compra", "⚖️ Comparativo de Cotizaciones", "Recepción / Entrega", lbl_terceros, lbl_planes, "📆 Programación de Preventivos",
-                          "📅 Calendario Preventivo", "👷 Técnicos", "🕒 Asistencia y Horas Extras", "🏭 Productividad", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
+                          "📅 Calendario Preventivo", "📋 Rutinas del Operador", "👷 Técnicos", "🕒 Asistencia y Horas Extras", "🏭 Productividad", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
-        opciones_menu = ["Panel General", "🏭 Productividad", "💰 Presupuesto", "📑 Reportes"]
+        opciones_menu = ["Panel General", "🏭 Productividad", "📋 Rutinas del Operador", "💰 Presupuesto", "📑 Reportes"]
     elif rol == "asistencia":
         # NUEVO: rol de Asistencia — acceso COMPLETO al módulo de asistencia (cargar, liquidación con montos, empleados, parámetros,
         # importar y exportar), pero a nada más de la app.
@@ -303,6 +340,8 @@ elif "Programación de Preventivos" in opcion:
     render_programacion(usuario)  # NUEVO: programar fechas de preventivos y ver la carga
 elif "Plan Preventivo" in opcion:
     render_planes()
+elif "Rutinas del Operador" in opcion:
+    render_rutinas(usuario)  # NUEVO: rondas de control del operador con QR
 elif "Calendario Preventivo" in opcion:
     render_calendario()
 elif "Asistencia (consulta)" in opcion:
