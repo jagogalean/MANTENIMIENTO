@@ -164,6 +164,9 @@ def render_asistencia(usuario):
                    "(SQL Editor → New query → pegar → Run). Si ya lo habías corrido, tus datos NO se borraron por este cartel: "
                    "el motivo real está en el detalle de abajo (copialo y mandámelo).")
         st.code(f"{type(e).__name__}: {e}", language=None)
+        if isinstance(e, AttributeError) and "has no attribute" in str(e):
+            st.error("Esto significa que un archivo de tu repositorio está incompleto o es de otra versión (el nombre aparece en el detalle de arriba). "
+                     "Volvé a subirlo, arrastrándolo desde el paquete que te pasé: LISTA_DE_ARCHIVOS.txt dice cuántas líneas tiene que mostrar GitHub.")
         return
     feriados = {A.a_fecha(f["fecha"]) for f in feriados_lista if A.a_fecha(f["fecha"])}
     _flash()
