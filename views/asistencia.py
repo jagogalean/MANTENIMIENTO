@@ -6,6 +6,9 @@ import streamlit as st
 
 from database import asistencia_db as db
 from database import asistencia_logica as A
+from database import exportacion as X
+
+ROLES_ASISTENCIA = ("admin", "asistencia")          # quién tiene acceso completo (incluye salarios)
 
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 ICONO = {"alta": "🔴", "media": "🟠", "info": "ℹ️"}
@@ -150,20 +153,22 @@ def _set_flash(tipo, texto):
 def render_asistencia(usuario):
     st.title("🕒 Asistencia y Horas Extras")
     st.write("Cargá la asistencia del personal, y la app calcula las horas ordinarias, extras, de domingo y de feriado y lo que corresponde pagar.")
-    if usuario.get("rol") != "admin":
-        st.warning("Esta pantalla está disponible solo para el administrador (contiene salarios).")
+    if usuario.get("rol") not in ROLES_ASISTENCIA:
+        st.warning("Esta pantalla está disponible solo para el administrador y el usuario de asistencia (contiene salarios).")
         return
     try:
         empleados, modalidades = db.listar_empleados(), db.listar_modalidades()
         feriados_lista, params = db.listar_feriados(), db.leer_parametros()
-    except Exception:
-        st.warning("Todavía no están creadas las tablas de asistencia. Corré el archivo `asistencia.sql` en Supabase "
-                   "(SQL Editor → New query → pegar → Run) y volvé a entrar.")
+    except Exception as e:
+        st.warning("No se pudieron leer las tablas de asistencia. Si nunca corriste `asistencia.sql` en Supabase, corrélo "
+                   "(SQL Editor → New query → pegar → Run). Si ya lo habías corrido, tus datos NO se borraron por este cartel: "
+                   "el motivo real está en el detalle de abajo (copialo y mandámelo).")
+        st.code(f"{type(e).__name__}: {e}", language=None)
         return
     feriados = {A.a_fecha(f["fecha"]) for f in feriados_lista if A.a_fecha(f["fecha"])}
     _flash()
 
-    tabs = st.tabs(["📝 Cargar", "📋 Registro", "💰 Liquidación", "👥 Empleados", "⚙️ Parámetros"])
+    tabs = st.tabs(["📝 Cargar", "📋 Registro", "💰 Liquidación", "👥 Empleados", "⚙️ Parámetros", "⬇️ Exportar (Power BI)"])
     with tabs[0]:
         _tab_cargar(empleados, modalidades, feriados, feriados_lista, usuario)
     with tabs[1]:
@@ -174,6 +179,8 @@ def render_asistencia(usuario):
         _tab_empleados(empleados, params)
     with tabs[4]:
         _tab_parametros(params, modalidades, feriados_lista, empleados, usuario)
+    with tabs[5]:
+        _tab_exportar(empleados, modalidades, feriados_lista, params, usuario)
 
 
 # ----------------------------------------------------------------
@@ -605,7 +612,11 @@ def _tab_parametros(params, modalidades, feriados_lista, empleados, usuario):
                "registros diarios. No se pisan los empleados ni los salarios que ya estén cargados.")
     archivo = st.file_uploader("Planilla de Excel", type=["xlsm", "xlsx"], key="as_import_file")
     if archivo is not None:
-        datos = A.leer_planilla(archivo.getvalue())
+        try:
+            datos = A.leer_planilla(archivo.getvalue())
+        except Exception as e:
+            st.error(f"No se pudo leer la planilla ({type(e).__name__}): {e}. Si el mensaje no te alcanza para corregirla, mandame esta línea y el archivo.")
+            return
         if datos.get("error"):
             st.error(datos["error"])
             return
@@ -625,8 +636,56 @@ def _tab_parametros(params, modalidades, feriados_lista, empleados, usuario):
         st.info("Por defecto la app paga el domingo nocturno y el feriado nocturno al 130% (factor 2,3) y reparte los turnos que cruzan la medianoche por hora real "
                 "(la planilla no distinguía eso); podés cambiarlo en «Reglas de cálculo».")
         if st.button("📥 Importar a la app", type="primary", key="as_import_btn"):
-            r = db.importar_planilla(datos, area.strip() or None, reemplazar, usuario.get("nombre"), con_params)
+            try:
+                r = db.importar_planilla(datos, area.strip() or None, reemplazar, usuario.get("nombre"), con_params)
+            except Exception as e:
+                st.error(f"La importación se cortó: {e}")
+                st.caption("Lo que se alcanzó a guardar antes del error (parámetros, modalidades, feriados, empleados) queda guardado. "
+                           "Podés volver a importar la planilla sin que se duplique nada.")
+                return
             _set_flash("success", f"Importado: {r['empleados_nuevos']} empleado(s) nuevo(s) ({r['empleados_existentes']} ya existían), "
                                   f"{r['registros_nuevos']} registro(s) nuevo(s), {r['registros_reemplazados']} reemplazado(s), {r['registros_omitidos']} omitido(s), "
                                   f"{r['feriados']} feriado(s) y {r['modalidades']} modalidad(es).")
             st.rerun()
+
+
+# ----------------------------------------------------------------
+# 6. Exportar todo a Excel (para Power BI)
+# ----------------------------------------------------------------
+def _tab_exportar(empleados, modalidades, feriados_lista, params, usuario):
+    st.write("Descargá **toda** la información de asistencia en un Excel pensado para Power BI: cada hoja es una tabla con nombre "
+             "(empleados, registro diario con todas sus horas y montos, resumen mensual, modalidades, feriados, parámetros y calendario), "
+             "más un diccionario que explica cada columna.")
+    st.warning("⚠️ El archivo incluye **salarios y montos en guaraníes**. Guardalo en un lugar protegido.")
+    hoy = date.today()
+    c1, c2, c3 = st.columns([1.2, 1, 1])
+    periodo = c1.selectbox("Qué período exportar", ["Todo lo cargado", "Este año", "Elegir fechas"], key="as_exp_periodo")
+    desde, hasta = date(2000, 1, 1), date(2100, 12, 31)
+    if periodo == "Este año":
+        desde, hasta = date(hoy.year, 1, 1), date(hoy.year, 12, 31)
+    elif periodo == "Elegir fechas":
+        desde = c2.date_input("Desde", value=hoy.replace(day=1), format="DD/MM/YYYY", key="as_exp_desde")
+        hasta = c3.date_input("Hasta", value=hoy, format="DD/MM/YYYY", key="as_exp_hasta")
+    if hasta < desde:
+        st.error("La fecha «Hasta» no puede ser anterior a «Desde».")
+        return
+    firma = f"{periodo}|{desde}|{hasta}"
+    if st.button("📦 Preparar el Excel", type="primary", key="as_exp_preparar"):
+        try:
+            with st.spinner("Armando el archivo…"):
+                registros = db.listar_registros(desde, hasta)
+                contenido = X.excel_asistencia(empleados, modalidades, feriados_lista, params, registros, usuario.get("nombre"), con_montos=True)
+        except Exception as e:
+            st.error(f"No se pudo armar el archivo: {e}")
+            return
+        st.session_state["as_exp"] = {"firma": firma, "bytes": contenido, "registros": len(registros),
+                                      "nombre": f"asistencia_powerbi_{X.hoy_paraguay():%Y%m%d}.xlsx"}
+    listo = st.session_state.get("as_exp")
+    if listo and listo["firma"] == firma:
+        st.success(f"Listo: {listo['registros']} registro(s) diario(s) y {len(empleados)} empleado(s).")
+        st.download_button("⬇️ Descargar el Excel para Power BI", data=listo["bytes"], file_name=listo["nombre"], key="as_exp_descargar",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    elif listo:
+        st.info("Cambiaste el período: tocá «Preparar el Excel» de nuevo.")
+    st.caption("En Power BI: Obtener datos → Libro de Excel → elegí el archivo → marcá las tablas. Para actualizar, volvé a descargarlo con el mismo nombre "
+               "y en la misma carpeta, y en Power BI tocá «Actualizar». La hoja «Leeme» del archivo explica todo.")
