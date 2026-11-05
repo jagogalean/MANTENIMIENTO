@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from database import productividad_db as db
+from database import exportacion as X
 from database import productividad_logica as P
 
 PRESETS = {
@@ -139,16 +140,17 @@ def render_productividad(usuario):
         return
     try:
         items, familias = _catalogos_cache(st.session_state.get("prod_cat_v", 0))
-    except Exception:
-        st.warning("Todavía no están creadas las tablas de Productividad. Corré en Supabase los archivos "
-                   "`productividad.sql` y `productividad_catalogos.sql`.")
+    except Exception as e:
+        st.warning("No se pudieron leer las tablas de Productividad. Si nunca corriste en Supabase los archivos `productividad.sql` y "
+                   "`productividad_catalogos.sql`, corrélos. Si ya los habías corrido, el motivo real está en el detalle de abajo.")
+        st.code(f"{type(e).__name__}: {e}", language=None)
         return
     cat = armar_catalogos(items, familias)
 
     secciones = []
     if P.puede_cargar(usuario):
         secciones.append("📝 Cargar turno")
-    secciones += ["📋 Registros", "📊 Indicadores"]
+    secciones += ["📋 Registros", "📊 Indicadores", "⬇️ Exportar (Power BI)"]
     if P.puede_administrar(usuario):
         secciones.append("⚙️ Catálogos")
     if not P.puede_cargar(usuario):
@@ -164,6 +166,8 @@ def render_productividad(usuario):
         _seccion_registros(usuario, cat)
     elif seccion.startswith("📊"):
         _seccion_indicadores(usuario)
+    elif seccion.startswith("⬇️"):
+        _seccion_exportar(usuario)
     else:
         _seccion_catalogos(cat, items, familias)
 
@@ -370,10 +374,10 @@ def _seccion_cargar(usuario, cat):
 # ----------------------------------------------------------------
 # Período y datos (compartido por Registros e Indicadores)
 # ----------------------------------------------------------------
-def _elegir_periodo(clave):
+def _elegir_periodo(clave, indice=0):
     hoy = P.hoy_paraguay()
     c1, c2, c3 = st.columns([1.2, 1, 1])
-    opcion = c1.selectbox("Período", PERIODOS, key=f"prod_per_{clave}")
+    opcion = c1.selectbox("Período", PERIODOS, index=indice, key=f"prod_per_{clave}")
     d1 = d2 = None
     if opcion == "Elegir fechas":
         d1 = c2.date_input("Desde", value=hoy.replace(day=1), format="DD/MM/YYYY", key=f"prod_d1_{clave}")
@@ -686,3 +690,31 @@ def _catalogo_familias(familias):
         _invalidar()
         st.session_state["prod_flash"] = (("success", f"Se guardaron {len(cambios)} cambio(s).") if not errores else ("warning", f"{errores} no se pudieron guardar (¿código repetido?)."))
         st.rerun()
+
+
+# ----------------------------------------------------------------
+# Exportar todo a Excel (para Power BI)
+# ----------------------------------------------------------------
+def _seccion_exportar(usuario):
+    st.write("Descargá **toda** la productividad en un Excel pensado para Power BI: cada hoja es una tabla con nombre (turnos con todos sus cálculos, "
+             "setups, paradas, rechazos, familias, catálogos y calendario), más un diccionario que explica cada columna. No contiene salarios.")
+    desde, hasta, opcion = _elegir_periodo("exp", indice=PERIODOS.index("Todo"))
+    firma = f"{opcion}|{desde}|{hasta}"
+    if st.button("📦 Preparar el Excel", type="primary", key="prod_exp_preparar"):
+        try:
+            with st.spinner("Armando el archivo…"):
+                turnos, setups, paradas, rechazos = db.listar_todo(desde, hasta)
+                contenido = X.excel_productividad(turnos, setups, paradas, rechazos, db.listar_familias(), db.listar_catalogo(), (usuario or {}).get("nombre"))
+        except Exception as e:
+            st.error(f"No se pudo armar el archivo: {e}")
+            return
+        st.session_state["prod_exp"] = {"firma": firma, "bytes": contenido, "turnos": len(turnos), "nombre": f"productividad_powerbi_{X.hoy_paraguay():%Y%m%d}.xlsx"}
+    listo = st.session_state.get("prod_exp")
+    if listo and listo["firma"] == firma:
+        st.success(f"Listo: {listo['turnos']} registro(s) de producción.")
+        st.download_button("⬇️ Descargar el Excel para Power BI", data=listo["bytes"], file_name=listo["nombre"], key="prod_exp_descargar",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    elif listo:
+        st.info("Cambiaste el período: tocá «Preparar el Excel» de nuevo.")
+    st.caption("En Power BI: Obtener datos → Libro de Excel → elegí el archivo → marcá las tablas. Para actualizar, volvé a descargarlo con el mismo nombre "
+               "y en la misma carpeta, y en Power BI tocá «Actualizar». La hoja «Leeme» del archivo explica todo.")
