@@ -93,8 +93,9 @@ def render_asistencia_consulta(usuario):
     try:
         empleados = sin_salarios(db.listar_empleados())
         modalidades, feriados_lista, params = db.listar_modalidades(), db.listar_feriados(), db.leer_parametros()
-    except Exception:
-        st.warning("Todavía no están creadas las tablas de asistencia. Pedile al administrador que corra el archivo `asistencia.sql`.")
+    except Exception as e:
+        st.warning("No se pudieron leer las tablas de asistencia. Avisale al administrador y mostrale el detalle de abajo.")
+        st.code(f"{type(e).__name__}: {e}", language=None)
         return
     feriados = {A.a_fecha(f["fecha"]) for f in feriados_lista if A.a_fecha(f["fecha"])}
     mods = A.modalidad_por_nombre(modalidades)
