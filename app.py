@@ -29,6 +29,7 @@ from views.comparativo_cotizaciones import render_comparativo_cotizaciones  # NU
 from views.programacion import render_programacion  # NUEVO: programar fechas de preventivos y ver la carga
 from views.asistencia import render_asistencia  # NUEVO: asistencia y horas extras del personal
 from views.productividad import render_productividad  # NUEVO: productividad (carga por logística + indicadores)
+from views.asistencia_consulta import render_asistencia_consulta  # NUEVO: asistencia de solo lectura (sin salarios)
 from datetime import datetime
 
 # Configuración de página
@@ -235,6 +236,13 @@ with st.sidebar:
                           "📅 Calendario Preventivo", "👷 Técnicos", "🕒 Asistencia y Horas Extras", "🏭 Productividad", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
     elif rol == "gerente":
         opciones_menu = ["Panel General", "🏭 Productividad", "💰 Presupuesto", "📑 Reportes"]
+    elif rol == "asistencia":
+        # NUEVO: rol de Asistencia — acceso COMPLETO al módulo de asistencia (cargar, liquidación con montos, empleados, parámetros,
+        # importar y exportar), pero a nada más de la app.
+        opciones_menu = ["🕒 Asistencia y Horas Extras"]
+    elif rol == "consulta_asistencia":
+        # NUEVO: rol de solo lectura — ve la asistencia y las horas del personal, sin salarios ni montos. Nada más.
+        opciones_menu = ["🕒 Asistencia (consulta)"]
     elif rol == "logistica":
         # NUEVO: rol Logística — carga la producción por turno y ve los registros e indicadores. Nada más.
         opciones_menu = ["🏭 Productividad"]
@@ -297,6 +305,8 @@ elif "Plan Preventivo" in opcion:
     render_planes()
 elif "Calendario Preventivo" in opcion:
     render_calendario()
+elif "Asistencia (consulta)" in opcion:
+    render_asistencia_consulta(usuario)  # NUEVO: asistencia de solo lectura (sin salarios)
 elif "Asistencia y Horas Extras" in opcion:
     render_asistencia(usuario)  # NUEVO: asistencia y horas extras del personal
 elif "Productividad" in opcion:
