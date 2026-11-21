@@ -243,6 +243,10 @@ def pagina_preventivo():
         render_planes(mostrar_titulo=False)
 
 
+def pagina_repuestos_consulta():
+    render_repuestos(modo_consulta=True)
+
+
 def pagina_rutinas():
     render_rutinas(usuario)
 
@@ -331,6 +335,7 @@ elif rol == "tecnico":
         P(pagina_mis_ots, ui.con_contador("Mis OTs", mis_ots_pendientes), ":material/assignment_ind:", "mis-ots",
           default=not desde_qr_checklist),
         p_recepcion,
+        P(pagina_repuestos_consulta, "Repuestos", ":material/inventory_2:", "repuestos-consulta"),
         P(pagina_agenda_tecnico, "Agenda del día", ":material/today:", "agenda"),
     ]
 elif rol == "operador":
