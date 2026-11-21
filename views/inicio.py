@@ -58,6 +58,50 @@ def _ir_a(paginas, clave, etiqueta, key, vista_ot=None):
         st.switch_page(pagina)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _rutinas_de_hoy():
+    """(hechos, total, pendientes_por_zona) de las rutinas del operador: diarias de hoy y semanales de esta semana."""
+    from database import rutinas_db as rdb
+    from database import rutinas_logica as R
+    hoy = R.hoy_paraguay()
+    zonas = {z["id"]: z["nombre"] for z in rdb.listar_zonas()}
+    items = [{**i, "zona_nombre": zonas.get(i["zona_id"])} for i in rdb.listar_items() if i.get("activo") is not False]
+    if not items:
+        return None
+    ejec = rdb.listar_ejecuciones(R.lunes_de(hoy), hoy)
+    por_id = {e["id"]: e for e in ejec}
+    resp = rdb.listar_respuestas(list(por_id)) if ejec else []
+    hechos = [{"item_id": r.get("item_id"), "fecha": por_id[r["ejecucion_id"]]["fecha"], "operador": por_id[r["ejecucion_id"]].get("operador_nombre"),
+               "resultado": r.get("resultado"), "hora": por_id[r["ejecucion_id"]].get("creado_en")} for r in resp if r["ejecucion_id"] in por_id]
+    estados = R.estado_items(items, hechos, hoy)
+    pendientes = {}
+    for e in estados:
+        if e["estado"] != "hecho":
+            z = e["item"].get("zona_nombre") or "(sin zona)"
+            pendientes[z] = pendientes.get(z, 0) + 1
+    return sum(1 for e in estados if e["estado"] == "hecho"), len(estados), pendientes
+
+
+def _tarjeta_rutinas(paginas):
+    try:
+        datos = _rutinas_de_hoy()
+    except Exception:
+        return                                   # si las tablas de rutinas no están, la tarjeta no aparece
+    if not datos:
+        return
+    hechos, total, pendientes = datos
+    with st.container(border=True):
+        color = "green" if hechos == total else ("red" if hechos == 0 else "orange")
+        st.subheader("Rutinas de hoy")
+        st.markdown(f":{color}-badge[{hechos} de {total} hechos]")
+        st.progress(hechos / total if total else 0)
+        if pendientes:
+            st.caption("Falta: " + " · ".join(f"{z} ({n})" for z, n in sorted(pendientes.items())))
+        else:
+            st.caption("Se hizo todo lo de hoy.")
+        _ir_a(paginas, "rutinas", "Ver qué se hizo", "ini_rutinas")
+
+
 def render_inicio(usuario, paginas, avisos_pendientes=None):
     ahora = ui.ahora()
     hoy = ahora.date()
@@ -172,6 +216,8 @@ def render_inicio(usuario, paginas, avisos_pendientes=None):
                         st.markdown(f"- {_sin_emoji(t['categoria'])}: {t['texto'].replace('⚠️', '').strip()}")
 
     with der:
+        if "rutinas" in paginas:
+            _tarjeta_rutinas(paginas)
         if es_admin and avisos_pendientes is not None:
             with st.container(border=True):
                 st.subheader(ui.con_contador("Avisos QR nuevos", len(avisos_pendientes)))
