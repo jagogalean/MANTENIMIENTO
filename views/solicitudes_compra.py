@@ -14,7 +14,7 @@ MAX_FOTOS = 3
 
 
 def render_solicitudes_compra(usuario):
-    st.title("🛒 Solicitud de Compra (Integrado con OpenOrange)")
+    st.title("Solicitudes de compra")
     st.write("Cargá lo que necesitás — se guarda en el sistema, se vincula con OpenOrange / OTs y se manda por correo a Compras en el mismo paso.")
 
     maquinas = st.session_state.get("maquinas", [])
