@@ -81,9 +81,10 @@ def calcular_ranking_maquinas(maquinas, ots, ot_repuestos, repuestos):
     return ranking[:5]
 
 
-def render_dashboard():
-    st.title("Panel General")
-    st.subheader("Indicadores clave de fiabilidad y estado del plan de mantenimiento.")
+def render_dashboard(mostrar_titulo=True):
+    if mostrar_titulo:
+        st.title("Panel General")
+        st.subheader("Indicadores clave de fiabilidad y estado del plan de mantenimiento.")
     
     # Recuperación segura del estado de sesión
     maquinas = st.session_state.get("maquinas", [])
