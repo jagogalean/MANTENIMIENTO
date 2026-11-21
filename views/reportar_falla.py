@@ -1,67 +1,55 @@
+"""
+Reportar falla: la pantalla del operador (con usuario).
+El aviso crea una OT correctiva sin asignar en el backlog compartido.
+"""
 import streamlit as st
-from datetime import datetime
-from database.conection import insert_ot, get_ots, get_maquinas_cached
 
-
-def generar_codigo_ot(ots):
-    """Genera el siguiente código consecutivo del año en curso. Ej: OT-2026-0007"""
-    year = datetime.now().year
-    prefijo = f"OT-{year}-"
-    consecutivos = []
-    for o in ots:
-        cod = o.get("codigo", "") or ""
-        if cod.startswith(prefijo):
-            try:
-                consecutivos.append(int(cod.replace(prefijo, "")))
-            except ValueError:
-                pass
-    siguiente = max(consecutivos) + 1 if consecutivos else 1
-    return f"{prefijo}{siguiente:04d}"
+from database.conection import get_maquinas_cached
+from database import ots_servicio as S
+from views import ui
 
 
 def render_reportar_falla(usuario):
-    st.title("🚨 Reportar Falla")
-    st.write("Contanos qué está pasando con la máquina. Tu reporte va directo al backlog compartido de mantenimiento, para que cualquier técnico lo pueda tomar.")
+    ui.encabezado("Reportar falla", "Tu aviso llega directo a mantenimiento como una orden de trabajo.")
+
+    mensaje = st.session_state.pop("reporte_mensaje", None)
+    if mensaje:
+        st.success(mensaje)
 
     maquinas = get_maquinas_cached()
     if not maquinas:
-        st.warning("Todavía no hay máquinas registradas en el sistema. Avisale a tu coordinador.")
+        st.warning("Todavía no hay máquinas cargadas. Avisale al coordinador de mantenimiento.")
         return
+    mapa = {m["id"]: m for m in sorted(maquinas, key=lambda m: str(m.get("nombre")).casefold())}
 
     with st.form("form_reporte_operador", clear_on_submit=True):
-        dict_m = {m["nombre"]: m["id"] for m in maquinas}
-        maquina_sel = st.selectbox("Máquina *", options=list(dict_m.keys()))
-        descripcion = st.text_area(
-            "¿Qué está pasando? *",
-            placeholder="Describí lo que observás: ruido raro, olor a quemado, la máquina se detuvo, vibración, etc."
-        )
-        maquina_parada = st.checkbox("La máquina está parada ahora mismo")
+        maquina_id = st.selectbox("Máquina *", list(mapa.keys()), index=None, placeholder="Escribí para buscar la máquina",
+                                  format_func=lambda i: mapa[i]["nombre"])
+        descripcion = st.text_area("¿Qué está pasando? *",
+                                   placeholder="Ej.: ruido fuerte en el motor, olor a quemado, se detuvo sola")
+        parada = st.radio("¿La máquina está parada?", ["No, sigue andando", "Sí, está parada"], horizontal=True)
+        enviar = st.form_submit_button("Enviar aviso", type="primary", use_container_width=True)
 
-        submit = st.form_submit_button("📨 Enviar Reporte")
-        if submit:
-            if not descripcion.strip():
-                st.error("❌ Describí la falla antes de enviar.")
-            else:
-                todas_las_ots = get_ots()
-                nueva_ot = {
-                    "codigo": generar_codigo_ot(todas_las_ots),
-                    "maquina_id": dict_m[maquina_sel],
-                    "tipo_mantenimiento": "Correctivo",
-                    "descripcion": f"[Reporte de operador: {usuario.get('nombre', 'Sin nombre')}] {descripcion}",
-                    "estado": "Pendiente",
-                    "fecha_inicio": datetime.now().isoformat(),
-                    "fecha_fin": None,
-                    "horas_paro": 0,
-                    "tecnico_id": None,
-                    "costo_mano_obra": 0,
-                    "requiere_permiso_trabajo": False,
-                    "permiso_trabajo_emitido": False,
-                    "origen": "operador"
-                }
-                insert_ot(nueva_ot)
-                st.success("✅ Reporte enviado correctamente. El equipo de mantenimiento lo va a ver en su backlog compartido.")
-                if maquina_parada:
-                    st.info("📌 Marcaste la máquina como parada — si es urgente, avisá también verbalmente a tu supervisor.")
-
-    st.markdown("---")
-    st.caption("💡 Este reporte crea automáticamente una Orden de Trabajo Correctiva sin asignar, visible para todos los técnicos en 'Mis OTs → Backlog Compartido'.")
+    if enviar:
+        if maquina_id is None or not (descripcion or "").strip():
+            st.error("Elegí la máquina y contá qué pasa.")
+            return
+        esta_parada = parada.startswith("Sí")
+        try:
+            codigo, _ = S.crear_ot({
+                "maquina_id": maquina_id,
+                "tipo_mantenimiento": "Correctivo",
+                "descripcion": S.con_marca_parada(f"[Aviso de {usuario.get('nombre') or 'operador'}] {descripcion.strip()}",
+                                                  esta_parada),
+                "estado": "Pendiente",
+                "tecnico_id": None,
+                "origen": "operador",
+            })
+        except Exception as e:
+            ui.error_amigable("No se pudo enviar el aviso. Probá de nuevo o avisá a tu supervisor.", e)
+            return
+        texto = f"Aviso enviado ({codigo}). Mantenimiento ya lo ve en su lista."
+        if esta_parada:
+            texto += " Como la máquina está parada, avisá también a tu supervisor."
+        st.session_state["reporte_mensaje"] = texto
+        st.rerun()
