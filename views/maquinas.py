@@ -1,13 +1,18 @@
-import html
 import unicodedata
 import streamlit as st
 import qrcode
 import json
 from io import BytesIO
 from database.conection import insert_maquina, delete_maquina, get_maquinas, update_maquina, insert_documento, delete_documento, get_documentos, insert_plan, get_planes, insert_actividad, get_actividades
-from datetime import datetime, timedelta
+from datetime import timedelta
 
-CRIT_LABELS = {"A": "🔴 Crítica", "B": "🟠 Importante", "C": "🔵 Menor"}
+import pandas as pd
+
+from database import ots_servicio as S
+from views import ui
+
+CRIT_LABELS = {"A": "A · Crítica", "B": "B · Importante", "C": "C · Menor"}
+CRIT_COLOR = {"A": "red", "B": "orange", "C": "blue"}
 LIMITE_RESULTADOS = 25
 
 
@@ -93,291 +98,333 @@ Texto del manual (puede estar incompleto o truncado):
     except Exception as e:
         return None, f"No se pudo generar el plan: {e}"
 
-def render_maquinas():
-    st.title("Máquinas")
-    st.write("Inventario base y criticidad operacional.")
+def _url_base():
+    return (st.session_state.get("app_base_url") or st.secrets.get("APP_BASE_URL", "") or "").rstrip("/")
 
-    with st.expander("⚙️ Configurar URL de la app (para los QR)"):
-        st.session_state["app_base_url"] = st.text_input(
-            "URL pública de tu app en Streamlit Cloud",
-            value=st.session_state.get("app_base_url") or st.secrets.get("APP_BASE_URL", ""),
-            placeholder="https://tu-app.streamlit.app"
-        )
-        st.caption(
-            "Es la URL que ves en el navegador cuando abrís tu app ya desplegada. Lo que escribís acá se pierde al "
-            "recargar o reiniciar la app: para que quede fija, agregala en los secrets como "
-            "APP_BASE_URL = \"https://tu-app.streamlit.app\"."
-        )
-    
-    # Formulario desplegable mediante checkbox de Streamlit
-    if st.checkbox("+ Nueva Máquina"):
-        with st.form("form_nueva_maquina", clear_on_submit=True):
-            tag = st.text_input("Tag *", placeholder="Ej: 50000000", help="El número que va pegado físicamente en la máquina (el que lee el QR).")
-            nombre = st.text_input("Nombre *", placeholder="Ej: Extrusora 02")
-            codigo = st.text_input("Código Único *", placeholder="Ej: EXT-002")
-            seccion = st.text_input("Sección / Área", placeholder="Ej: Planta A - Línea 2")
-            criticidad = st.selectbox("Criticidad", ["A", "B", "C"], format_func=lambda x: CRIT_LABELS[x])
-            costo_hora_parada = st.number_input(
-                "Costo por Hora de Parada (Gs.)", min_value=0, step=1000, value=0,
-                help="Lucro cesante: cuánto cuesta cada hora que esta máquina está parada."
-            )
-            
-            submit = st.form_submit_button("Guardar Máquina")
-            if submit:
-                if not nombre.strip() or not codigo.strip():
-                    st.error("El nombre y el código de la máquina son obligatorios.")
-                else:
-                    # El ID no se envía en el payload ya que Supabase lo genera automáticamente como BIGINT
-                    payload = {
-                        "tag": tag.strip() or None,
-                        "nombre": nombre,
-                        "codigo": codigo,
-                        "seccion": seccion,
-                        "criticidad": criticidad,
-                        "costo_hora_parada": costo_hora_parada
-                    }
-                    insert_maquina(payload)
-                    st.session_state.maquinas = get_maquinas()
-                    st.success(f"Máquina '{nombre}' guardada con éxito.")
-                    st.rerun()
 
-    # Listado en Interfaz Industrial
-    st.markdown("<br>", unsafe_allow_html=True)
-    if not st.session_state.maquinas:
-        st.info("Todavía no has cargado ninguna máquina.")
-    else:
-        todas = st.session_state.maquinas
-        b1, b2, b3 = st.columns([0.5, 0.25, 0.25])
-        texto_busqueda = b1.text_input("🔍 Buscar máquina", placeholder="nombre, código, tag, sección o descripción", key="maq_buscar")
-        secciones = sorted({(m.get("seccion") or "—") for m in todas}, key=str.casefold)
-        f_seccion = b2.selectbox("Sección", ["Todas"] + secciones, key="maq_f_seccion")
-        f_crit = b3.selectbox("Criticidad", ["Todas", "A", "B", "C"], key="maq_f_crit",
-                              format_func=lambda x: "Todas" if x == "Todas" else CRIT_LABELS[x])
-        ver_todas = st.checkbox(f"Mostrar todas las máquinas ({len(todas)})", key="maq_ver_todas")
-        hay_filtro = bool(texto_busqueda.strip()) or f_seccion != "Todas" or f_crit != "Todas"
-        if not hay_filtro and not ver_todas:
-            por_seccion = {}
-            for m in todas:
-                por_seccion[m.get("seccion") or "—"] = por_seccion.get(m.get("seccion") or "—", 0) + 1
-            st.info(f"Hay {len(todas)} máquinas cargadas. Escribí en el buscador (o elegí una sección o criticidad) para ver su ficha.")
-            st.caption("Por sección: " + " · ".join(f"{k} ({v})" for k, v in sorted(por_seccion.items(), key=lambda kv: kv[0].casefold())))
-            maquinas_a_mostrar = []
-        else:
-            coincidencias = buscar_maquinas(todas, texto_busqueda, f_seccion, f_crit)
-            if not coincidencias:
-                st.warning("No se encontró ninguna máquina con esa búsqueda.")
-            elif len(coincidencias) > LIMITE_RESULTADOS and not ver_todas:
-                st.caption(f"{len(coincidencias)} resultados. Se muestran los primeros {LIMITE_RESULTADOS}: afiná la búsqueda o tildá «Mostrar todas».")
+def _refrescar_maquinas():
+    st.session_state.maquinas = get_maquinas()
+    try:
+        from database.conection import get_maquinas_cached
+        get_maquinas_cached.clear()
+    except Exception:
+        pass
+
+
+@st.dialog("Nueva máquina")
+def _dialogo_nueva():
+    tag = st.text_input("Tag", placeholder="Ej.: 50000000", help="El número pegado físicamente en la máquina.")
+    nombre = st.text_input("Nombre *", placeholder="Ej.: COEX – Enrollador")
+    c1, c2 = st.columns(2)
+    codigo = c1.text_input("Código único *", placeholder="Ej.: EXT-ENR-01")
+    seccion = c2.text_input("Sección / área", placeholder="Ej.: COEX")
+    c3, c4 = st.columns(2)
+    criticidad = c3.selectbox("Criticidad", ["A", "B", "C"], index=1, format_func=lambda x: CRIT_LABELS[x])
+    costo = c4.number_input("Costo por hora de parada (Gs.)", min_value=0, step=100000,
+                            help="Lucro cesante: cuánto cuesta cada hora que esta máquina está parada.")
+    if st.button("Guardar máquina", type="primary", use_container_width=True):
+        existentes = {str(m.get("codigo") or "").strip().casefold() for m in st.session_state.get("maquinas", [])}
+        if not nombre.strip() or not codigo.strip():
+            st.error("El nombre y el código son obligatorios.")
+            return
+        if codigo.strip().casefold() in existentes:
+            st.error("Ya hay una máquina con ese código.")
+            return
+        try:
+            insert_maquina({"tag": tag.strip() or None, "nombre": nombre.strip(), "codigo": codigo.strip(),
+                            "seccion": seccion.strip(), "criticidad": criticidad, "costo_hora_parada": costo})
+        except Exception as e:
+            ui.error_amigable("No se pudo guardar la máquina.", e)
+            return
+        _refrescar_maquinas()
+        st.session_state["maq_mensaje"] = f"Máquina «{nombre.strip()}» guardada."
+        st.rerun()
+
+
+def _resumen_por_maquina(maquinas):
+    """OTs abiertas, parada y próximo preventivo de cada máquina."""
+    ots = st.session_state.get("ots", [])
+    planes = st.session_state.get("planes", [])
+    datos = {m["id"]: {"abiertas": 0, "parada": False, "proximo": None} for m in maquinas}
+    for o in ots:
+        d = datos.get(o.get("maquina_id"))
+        if d is not None and o.get("estado") != "Completada":
+            d["abiertas"] += 1
+            d["parada"] = d["parada"] or S.es_parada(o)
+    for p in planes:
+        d = datos.get(p.get("maquina_id"))
+        f = ui.a_fecha(p.get("proxima_ejecucion"))
+        if d is not None and f and (d["proximo"] is None or f < d["proximo"]):
+            d["proximo"] = f
+    return datos
+
+
+def _lista(todas):
+    datos = _resumen_por_maquina(todas)
+    c1, c2, c3 = st.columns([3, 1.5, 1.5])
+    texto = c1.text_input("Buscar", placeholder="Nombre, código, tag, sección o descripción", key="maq_buscar",
+                          label_visibility="collapsed")
+    secciones = sorted({(m.get("seccion") or "—") for m in todas}, key=str.casefold)
+    seccion = c2.selectbox("Sección", ["Todas"] + secciones, key="maq_f_seccion", label_visibility="collapsed",
+                           format_func=lambda x: "Todas las secciones" if x == "Todas" else x)
+    crit = c3.selectbox("Criticidad", ["Todas", "A", "B", "C"], key="maq_f_crit", label_visibility="collapsed",
+                        format_func=lambda x: "Toda criticidad" if x == "Todas" else CRIT_LABELS[x])
+    lista = buscar_maquinas(todas, texto, seccion, crit)
+    lista = sorted(lista, key=lambda m: (not datos[m["id"]]["parada"], str(m.get("seccion") or ""), str(m.get("nombre") or "").casefold()))
+    if not lista:
+        ui.estado_vacio("Ninguna máquina coincide con la búsqueda.")
+        return
+    hoy = ui.hoy()
+    df = pd.DataFrame([{
+        "id": m["id"],
+        "Código": m.get("codigo"),
+        "Máquina": m.get("nombre"),
+        "Sección": m.get("seccion") or "—",
+        "Criticidad": m.get("criticidad") or "—",
+        "Estado": "Parada" if datos[m["id"]]["parada"] else "Operando",
+        "OTs abiertas": datos[m["id"]]["abiertas"],
+        "Próximo preventivo": (("Vencido " if datos[m["id"]]["proximo"] < hoy else "") + datos[m["id"]]["proximo"].strftime("%d/%m/%Y"))
+                              if datos[m["id"]]["proximo"] else "—",
+    } for m in lista])
+    evento = st.dataframe(df, hide_index=True, use_container_width=True, on_select="rerun", selection_mode="single-row",
+                          key="maq_tabla", column_order=[c for c in df.columns if c != "id"],
+                          height=min(38 + 35 * len(df), 600))
+    st.caption(f"{len(lista)} de {len(todas)} máquinas. Tocá una fila para abrir su ficha.")
+    filas = evento.selection.rows if evento and evento.selection else []
+    if filas and filas[0] < len(df):
+        valor = df.iloc[filas[0]]["id"]
+        st.session_state["maq_sel_id"] = valor.item() if hasattr(valor, "item") else valor
+        st.rerun()
+
+
+def _ficha(m):
+    mid = m["id"]
+    hoy = ui.hoy()
+    ots = [o for o in st.session_state.get("ots", []) if o.get("maquina_id") == mid]
+    planes = [p for p in st.session_state.get("planes", []) if p.get("maquina_id") == mid]
+    abiertas = [o for o in ots if o.get("estado") != "Completada"]
+    parada = any(S.es_parada(o) for o in abiertas)
+
+    if st.button("← Volver a la lista", type="tertiary"):
+        st.session_state.pop("maq_sel_id", None)
+        st.session_state.pop("maq_tabla", None)
+        st.rerun()
+    st.subheader(m.get("nombre") or "Máquina")
+    st.caption(" · ".join(x for x in [m.get("codigo"), f"Tag {m.get('tag')}" if m.get("tag") else None,
+                                       m.get("seccion")] if x))
+    st.markdown((":red-badge[Parada]" if parada else ":green-badge[Operando]")
+                + f" :{CRIT_COLOR.get(m.get('criticidad'), 'gray')}-badge[Criticidad {m.get('criticidad') or '—'}]"
+                + f" :gray-badge[Parada: {ui.formato_gs(m.get('costo_hora_parada'))} / h]")
+
+    proximas = sorted([f for f in (ui.a_fecha(p.get("proxima_ejecucion")) for p in planes) if f])
+    inicio_mes = hoy.replace(day=1)
+    paro_mes = sum(float(o.get("horas_paro") or 0) for o in ots if (ui.a_fecha(o.get("fecha_inicio")) or inicio_mes.replace(year=1900)) >= inicio_mes)
+    costo_anio = sum(float(o.get("costo_total_ot") or o.get("costo_mano_obra") or 0) for o in ots
+                     if (ui.a_fecha(o.get("fecha_inicio")) or hoy.replace(year=1900)).year == hoy.year)
+    k1, k2, k3, k4 = st.columns(4)
+    with k1, st.container(border=True):
+        st.metric("OTs abiertas", len(abiertas))
+    with k2, st.container(border=True):
+        st.metric("Próximo preventivo", proximas[0].strftime("%d/%m") if proximas else "—")
+        if proximas and proximas[0] < hoy:
+            st.caption(f"Vencido hace {(hoy - proximas[0]).days} días")
+    with k3, st.container(border=True):
+        st.metric(f"Paro · {ui.nombre_mes(hoy)}", f"{paro_mes:.1f} h")
+    with k4, st.container(border=True):
+        st.metric(f"Costo OTs · {hoy.year}", ui.formato_gs(costo_anio))
+
+    docs = [d for d in st.session_state.get("documentos", []) if d.get("maquina_id") == mid]
+    t_res, t_datos, t_docs, t_qr, t_ia = st.tabs(["Resumen", "Datos", f"Documentos ({len(docs)})", "Códigos QR", "Plan con IA"])
+
+    with t_res:
+        izq, der = st.columns([3, 2], gap="medium")
+        with izq:
+            st.markdown("**Últimas OTs**")
+            if not ots:
+                st.caption("Esta máquina todavía no tiene OTs.")
             else:
-                st.caption(f"{len(coincidencias)} resultado(s).")
-            maquinas_a_mostrar = coincidencias if ver_todas else coincidencias[:LIMITE_RESULTADOS]
-        for m in maquinas_a_mostrar:
-            col_info, col_action = st.columns([0.85, 0.15])
-            with col_info:
-                costo_parada_fmt = f"{m.get('costo_hora_parada', 0) or 0:,.0f}".replace(",", ".")
-                tag_txt = f" <small style='color:#F2A93B;'>Tag: {m.get('tag')}</small>" if m.get("tag") else ""
-                desc_txt = (f"<br><small style='color:#7C8894;'>{html.escape(str(m.get('descripcion')))}</small>"
-                            if m.get("descripcion") else "")
-                st.markdown(f"""
-                <div class='industrial-panel'>
-                    <strong>{m.get('nombre')}</strong> <small style='color:#38BDF8;'>[{m.get('codigo')}]</small>{tag_txt} — 
-                    <small style='color:#7C8894;'>{m.get('seccion') or 'sin sección'}</small><br>
-                    <span>Criticidad: {CRIT_LABELS.get(m.get('criticidad'), m.get('criticidad'))} · Costo Hora de Parada: Gs. {costo_parada_fmt}</span>{desc_txt}
-                </div>
-                """, unsafe_allow_html=True)
-            with col_action:
-                # Se utiliza el ID numérico de Supabase para la clave del botón
-                if st.button("🗑️ Eliminar", key=f"del_m_{m.get('id')}"):
-                    delete_maquina(m.get('id'))
-                    st.session_state.maquinas = get_maquinas()
-                    st.rerun()
-
-            with st.expander(f"✏️ Editar datos de {m.get('nombre')}"):
-                col_e1, col_e2 = st.columns(2)
-                nuevo_tag = col_e1.text_input("Tag", value=m.get("tag") or "", key=f"edit_tag_{m.get('id')}")
-                nuevo_nombre = col_e2.text_input("Nombre", value=m.get("nombre") or "", key=f"edit_nombre_{m.get('id')}")
-                col_e3, col_e4 = st.columns(2)
-                nuevo_codigo = col_e3.text_input("Código Único", value=m.get("codigo") or "", key=f"edit_codigo_{m.get('id')}")
-                nueva_seccion = col_e4.text_input("Sección / Área", value=m.get("seccion") or "", key=f"edit_seccion_{m.get('id')}")
-                nueva_criticidad = st.selectbox(
-                    "Criticidad", ["A", "B", "C"], format_func=lambda x: CRIT_LABELS[x],
-                    index=["A", "B", "C"].index(m.get("criticidad")) if m.get("criticidad") in ["A", "B", "C"] else 0,
-                    key=f"edit_criticidad_{m.get('id')}"
-                )
-                if st.button("💾 Guardar cambios", key=f"save_edit_maquina_{m.get('id')}"):
-                    if not nuevo_nombre.strip() or not nuevo_codigo.strip():
-                        st.error("El nombre y el código son obligatorios.")
-                    else:
-                        update_maquina(m.get("id"), {
-                            "tag": nuevo_tag.strip() or None,
-                            "nombre": nuevo_nombre,
-                            "codigo": nuevo_codigo,
-                            "seccion": nueva_seccion,
-                            "criticidad": nueva_criticidad
-                        })
-                        st.session_state.maquinas = get_maquinas()
-                        st.success("✅ Máquina actualizada.")
-                        st.rerun()
-
-            with st.expander(f"💰 Editar costo de hora de parada de {m.get('nombre')}"):
-                nuevo_costo_parada = st.number_input(
-                    "Costo por Hora de Parada (Gs.)", min_value=0, step=1000,
-                    value=int(m.get("costo_hora_parada", 0) or 0),
-                    key=f"costo_parada_{m.get('id')}"
-                )
-                if st.button("💾 Guardar", key=f"save_costo_parada_{m.get('id')}"):
-                    update_maquina(m.get("id"), {"costo_hora_parada": nuevo_costo_parada})
-                    st.session_state.maquinas = get_maquinas()
-                    st.success("✅ Costo actualizado.")
-                    st.rerun()
-
-            # --- DOCUMENTACIÓN TÉCNICA (manuales, planos, fichas) ---
-            docs_maquina = [d for d in st.session_state.get("documentos", []) if d.get("maquina_id") == m.get("id")]
-            with st.expander(f"📎 Documentos técnicos ({len(docs_maquina)})"):
-                if docs_maquina:
-                    for d in docs_maquina:
-                        col_d, col_x = st.columns([0.85, 0.15])
-                        col_d.markdown(f"[{d.get('nombre_archivo')}]({d.get('url')}) · {d.get('tipo') or 'General'}")
-                        if col_x.button("🗑️", key=f"del_doc_{d.get('id')}"):
-                            delete_documento(d.get('id'))
-                            st.session_state.documentos = get_documentos()
-                            st.rerun()
+                st.dataframe([{
+                    "Código": o.get("codigo"), "Fecha": ui.fecha_corta(o.get("fecha_inicio")),
+                    "Tipo": o.get("tipo_mantenimiento"), "Estado": S.NOMBRE_ESTADO.get(o.get("estado"), o.get("estado")),
+                    "Trabajo": S.descripcion_sin_marca(o)[:60], "Paro (h)": float(o.get("horas_paro") or 0),
+                } for o in sorted(ots, key=lambda o: -(o.get("id") or 0))[:10]], hide_index=True, use_container_width=True)
+        with der:
+            st.markdown("**Planes preventivos**")
+            if not planes:
+                st.caption("Sin planes preventivos. Podés generarlos en la pestaña «Plan con IA» o en Preventivo.")
+            for p in sorted(planes, key=lambda p: str(p.get("proxima_ejecucion") or "9999")):
+                f = ui.a_fecha(p.get("proxima_ejecucion"))
+                if f is None:
+                    marca = ":gray-badge[Sin fecha]"
+                elif f < hoy:
+                    marca = f":red-badge[Vencido {(hoy - f).days} d]"
+                elif (f - hoy).days <= 7:
+                    marca = f":orange-badge[{f:%d/%m}]"
                 else:
-                    st.caption("Sin documentos cargados todavía.")
+                    marca = f":blue-badge[{f:%d/%m/%Y}]"
+                st.markdown(f"{ui.texto_md(p.get('nombre_plan'))} · cada {p.get('frecuencia_dias')} d {marca}")
 
-                with st.form(f"form_doc_{m.get('id')}", clear_on_submit=True):
-                    nombre_doc = st.text_input("Nombre del documento", placeholder="Ej: Manual eléctrico Extrusora 02")
-                    url_doc = st.text_input("Link (Google Drive, OneDrive, etc.)")
-                    tipo_doc = st.selectbox("Tipo", ["Manual", "Plano", "Ficha Técnica", "Foto", "Otro"], key=f"tipo_doc_{m.get('id')}")
-                    if st.form_submit_button("Adjuntar documento"):
-                        if not nombre_doc.strip() or not url_doc.strip():
-                            st.error("❌ Nombre y link son obligatorios.")
+    with t_datos:
+        c1, c2 = st.columns(2)
+        tag = c1.text_input("Tag", value=m.get("tag") or "", key=f"edit_tag_{mid}")
+        nombre = c2.text_input("Nombre *", value=m.get("nombre") or "", key=f"edit_nombre_{mid}")
+        c3, c4 = st.columns(2)
+        codigo = c3.text_input("Código único *", value=m.get("codigo") or "", key=f"edit_codigo_{mid}")
+        seccion = c4.text_input("Sección / área", value=m.get("seccion") or "", key=f"edit_seccion_{mid}")
+        c5, c6 = st.columns(2)
+        criticidad = c5.selectbox("Criticidad", ["A", "B", "C"], format_func=lambda x: CRIT_LABELS[x],
+                                  index=["A", "B", "C"].index(m.get("criticidad")) if m.get("criticidad") in ["A", "B", "C"] else 0,
+                                  key=f"edit_criticidad_{mid}")
+        costo = c6.number_input("Costo por hora de parada (Gs.)", min_value=0, step=100000,
+                                value=int(m.get("costo_hora_parada") or 0), key=f"costo_parada_{mid}")
+        b1, b2 = st.columns([1, 1])
+        if b1.button("Guardar cambios", type="primary", key=f"save_edit_maquina_{mid}", use_container_width=True):
+            if not nombre.strip() or not codigo.strip():
+                st.error("El nombre y el código son obligatorios.")
+            else:
+                try:
+                    update_maquina(mid, {"tag": tag.strip() or None, "nombre": nombre.strip(), "codigo": codigo.strip(),
+                                         "seccion": seccion.strip(), "criticidad": criticidad, "costo_hora_parada": costo})
+                except Exception as e:
+                    ui.error_amigable("No se pudieron guardar los cambios.", e)
+                else:
+                    _refrescar_maquinas()
+                    st.session_state["maq_mensaje"] = "Máquina actualizada."
+                    st.rerun()
+        with b2:
+            aviso = (f"Esta máquina tiene {len(ots)} OT(s) y {len(planes)} plan(es). Si la eliminás, podés perder ese historial. "
+                     if (ots or planes) else "")
+            if ui.boton_confirmar("Eliminar máquina", f"del_m_{mid}",
+                                  aviso + f"¿Eliminar **{ui.texto_md(m.get('nombre'))}** definitivamente?",
+                                  texto_confirmar="Sí, eliminar", use_container_width=True):
+                try:
+                    delete_maquina(mid)
+                except Exception as e:
+                    ui.error_amigable("No se pudo eliminar: la máquina tiene registros asociados.", e)
+                else:
+                    _refrescar_maquinas()
+                    st.session_state.pop("maq_sel_id", None)
+                    st.session_state["maq_mensaje"] = "Máquina eliminada."
+                    st.rerun()
+
+    with t_docs:
+        if not docs:
+            st.caption("Sin documentos todavía.")
+        for d in docs:
+            c_d, c_x = st.columns([5, 1], vertical_alignment="center")
+            c_d.markdown(f"[{ui.texto_md(d.get('nombre_archivo'))}]({d.get('url')}) · {ui.texto_md(d.get('tipo') or 'General')}"
+                         if str(d.get("url") or "").startswith(("http://", "https://"))
+                         else f"{ui.texto_md(d.get('nombre_archivo'))} · {ui.texto_md(d.get('url'))}")
+            with c_x:
+                if ui.boton_confirmar("Quitar", f"del_doc_{d.get('id')}", "¿Quitar este documento de la ficha?",
+                                      texto_confirmar="Sí, quitar"):
+                    delete_documento(d.get("id"))
+                    st.session_state.documentos = get_documentos()
+                    st.rerun()
+        with st.form(f"form_doc_{mid}", clear_on_submit=True):
+            st.markdown("**Agregar documento**")
+            c1, c2 = st.columns(2)
+            nombre_doc = c1.text_input("Nombre", placeholder="Ej.: Manual eléctrico")
+            tipo_doc = c2.selectbox("Tipo", ["Manual", "Plano", "Ficha Técnica", "Foto", "Otro"])
+            url_doc = st.text_input("Enlace (Google Drive, OneDrive, etc.)", placeholder="https://...")
+            if st.form_submit_button("Agregar documento"):
+                if not nombre_doc.strip() or not url_doc.strip():
+                    st.error("El nombre y el enlace son obligatorios.")
+                else:
+                    insert_documento({"maquina_id": mid, "nombre_archivo": nombre_doc.strip(), "url": url_doc.strip(), "tipo": tipo_doc})
+                    st.session_state.documentos = get_documentos()
+                    st.session_state["maq_mensaje"] = "Documento agregado."
+                    st.rerun()
+
+    with t_qr:
+        base = _url_base()
+        if not base:
+            st.warning("Falta la dirección de la app. Cargala abajo o, mejor, en los secrets como APP_BASE_URL.")
+        with st.expander("Dirección de la app para los QR", expanded=not base):
+            st.session_state["app_base_url"] = st.text_input("URL de la app", value=base, placeholder="https://tu-app.streamlit.app",
+                                                             key=f"url_qr_{mid}")
+            st.caption("Lo que escribís acá dura solo esta sesión. Para dejarlo fijo, agregalo en los secrets: APP_BASE_URL = \"https://...\"")
+        base = _url_base()
+        if base:
+            q1, q2 = st.columns(2)
+            for col, titulo, url, archivo, clave in (
+                (q1, "Avisar una falla (sin iniciar sesión)", f"{base}/?equipo={mid}", f"QR_FALLAS_{m.get('codigo')}.png", f"dl_qr_falla_{mid}"),
+                (q2, "Recepción / entrega", f"{base}/?maquina_id={mid}&vista=checklist", f"QR_{m.get('codigo')}.png", f"dl_qr_{mid}"),
+            ):
+                with col, st.container(border=True):
+                    st.markdown(f"**{titulo}**")
+                    png = generar_qr_png(url)
+                    st.image(png, width=180)
+                    st.code(url, language=None)
+                    st.download_button("Descargar PNG", data=png, file_name=archivo, mime="image/png", key=clave)
+
+    with t_ia:
+        api_key = st.secrets.get("GEMINI_API_KEY", "")
+        if not api_key:
+            api_key = st.text_input("API key de Gemini (solo para esta sesión)", type="password", key=f"api_key_{mid}",
+                                    help="Conviene configurarla en los secrets como GEMINI_API_KEY.")
+        st.caption("Subí el manual del fabricante en PDF. La IA propone tareas y frecuencias; vos las revisás antes de cargarlas.")
+        manual = st.file_uploader("Manual (PDF)", type=["pdf"], key=f"manual_pdf_{mid}")
+        if st.button("Analizar manual", key=f"analizar_{mid}", disabled=manual is None):
+            if not api_key:
+                st.error("Falta la API key de Gemini.")
+            else:
+                with st.spinner("Leyendo el manual y consultando la IA..."):
+                    texto_manual = extraer_texto_pdf(manual)
+                    if not texto_manual.strip():
+                        st.error("No se pudo leer texto del PDF (¿es un escaneo sin OCR?).")
+                    else:
+                        tareas, error = generar_plan_con_ia(texto_manual, api_key)
+                        if error:
+                            st.error(error)
+                        elif not tareas:
+                            st.warning("La IA no encontró tareas de preventivo claras en este manual.")
                         else:
-                            insert_documento({
-                                "maquina_id": m.get("id"),
-                                "nombre_archivo": nombre_doc,
-                                "url": url_doc,
-                                "tipo": tipo_doc
-                            })
-                            st.session_state.documentos = get_documentos()
-                            st.success("✅ Documento adjuntado.")
-                            st.rerun()
+                            st.session_state[f"tareas_ia_{mid}"] = tareas
+        tareas_ia = st.session_state.get(f"tareas_ia_{mid}")
+        if tareas_ia:
+            st.markdown("**Tareas sugeridas** (revisalas y ajustalas antes de cargar)")
+            editadas = st.data_editor(tareas_ia, num_rows="dynamic", key=f"editor_ia_{mid}", use_container_width=True,
+                                      column_config={"tarea": "Tarea",
+                                                     "frecuencia_dias": st.column_config.NumberColumn("Frecuencia (días)", min_value=1, step=1),
+                                                     "nota": "Nota de la IA"})
+            if st.button("Cargar como planes preventivos", type="primary", key=f"cargar_ia_{mid}"):
+                grupos = {}
+                for t in editadas:
+                    if t.get("tarea") and t.get("frecuencia_dias"):
+                        grupos.setdefault(int(t["frecuencia_dias"]), []).append(t["tarea"])
+                for frecuencia, actividades in grupos.items():
+                    creado = insert_plan({"maquina_id": mid, "nombre_plan": f"Preventivo cada {frecuencia} días (según manual)",
+                                          "frecuencia_dias": frecuencia, "ultima_ejecucion": None,
+                                          "proxima_ejecucion": (hoy + timedelta(days=frecuencia)).strftime("%Y-%m-%d")})
+                    plan_id = creado[0]["id"] if creado else None
+                    for a in actividades:
+                        insert_actividad({"plan_id": plan_id, "actividad": a})
+                st.session_state.planes = get_planes()
+                st.session_state.plan_actividades = get_actividades()
+                del st.session_state[f"tareas_ia_{mid}"]
+                st.session_state["maq_mensaje"] = f"{len(grupos)} plan(es) creado(s), agrupados por frecuencia."
+                st.rerun()
 
-            # --- QR PARA RECEPCIÓN / ENTREGA DESDE LA MÁQUINA ---
-            with st.expander("📱 Código QR de Recepción / Entrega"):
-                base_url = st.session_state.get("app_base_url", "")
-                if not base_url:
-                    st.warning("Configurá la URL de tu app arriba (⚙️ Configurar URL) para poder generar el QR.")
-                else:
-                    url_qr = f"{base_url.rstrip('/')}/?maquina_id={m.get('id')}&vista=checklist"
-                    qr_bytes = generar_qr_png(url_qr)
-                    st.image(qr_bytes, caption=f"Escanear para Recepción/Entrega de {m.get('nombre')}", width=200)
-                    st.code(url_qr, language=None)
-                    st.download_button(
-                        "⬇️ Descargar QR (PNG)",
-                        data=qr_bytes,
-                        file_name=f"QR_{m.get('codigo')}.png",
-                        mime="image/png",
-                        key=f"dl_qr_{m.get('id')}"
-                    )
 
-            # --- QR PARA REPORTAR FALLAS (público: no pide iniciar sesión) ---
-            with st.expander("🚨 Código QR para reportar fallas (sin iniciar sesión)"):
-                base_url_fallas = st.session_state.get("app_base_url", "")
-                if not base_url_fallas:
-                    st.warning("Configurá la URL de tu app arriba (⚙️ Configurar URL) para poder generar el QR.")
-                else:
-                    url_falla = f"{base_url_fallas.rstrip('/')}/?equipo={m.get('id')}"
-                    qr_falla = generar_qr_png(url_falla)
-                    st.image(qr_falla, caption=f"Escanear para reportar una falla de {m.get('nombre')}", width=200)
-                    st.code(url_falla, language=None)
-                    st.download_button(
-                        "⬇️ Descargar QR (PNG)",
-                        data=qr_falla,
-                        file_name=f"QR_FALLAS_{m.get('codigo')}.png",
-                        mime="image/png",
-                        key=f"dl_qr_falla_{m.get('id')}"
-                    )
+def render_maquinas():
+    cab, acc = st.columns([4, 1.2], vertical_alignment="bottom")
+    with cab:
+        ui.encabezado("Máquinas", "Buscá una máquina para ver su estado, historial, planes, documentos y códigos QR.")
+    if acc.button("+ Nueva máquina", type="primary", use_container_width=True):
+        _dialogo_nueva()
 
-            # --- GENERAR PLAN PREVENTIVO CON IA A PARTIR DEL MANUAL ---
-            with st.expander("🤖 Generar Plan Preventivo con IA (desde el manual)"):
-                api_key_secret = st.secrets.get("GEMINI_API_KEY", "")
-                if api_key_secret:
-                    api_key_usar = api_key_secret
-                    st.caption("Usando la GEMINI_API_KEY configurada en los secrets de la app.")
-                else:
-                    api_key_usar = st.text_input(
-                        "Pegá tu API Key de Gemini (solo para esta sesión, no se guarda)",
-                        type="password",
-                        key=f"api_key_{m.get('id')}",
-                        help="Se recomienda configurarla en Streamlit Cloud > Settings > Secrets como GEMINI_API_KEY en vez de pegarla acá cada vez."
-                    )
+    mensaje = st.session_state.pop("maq_mensaje", None)
+    if mensaje:
+        st.toast(mensaje, icon=":material/check_circle:")
 
-                manual_pdf = st.file_uploader(
-                    "Subí el manual del fabricante (PDF)", type=["pdf"], key=f"manual_pdf_{m.get('id')}"
-                )
-
-                if st.button("🔍 Analizar manual y sugerir plan", key=f"analizar_{m.get('id')}"):
-                    if not manual_pdf:
-                        st.error("❌ Subí un PDF primero.")
-                    elif not api_key_usar:
-                        st.error("❌ Falta la API Key de Gemini.")
-                    else:
-                        with st.spinner("Leyendo el manual y consultando la IA..."):
-                            texto_manual = extraer_texto_pdf(manual_pdf)
-                            if not texto_manual.strip():
-                                st.error("❌ No se pudo extraer texto del PDF (¿es un escaneo sin OCR?).")
-                            else:
-                                tareas_sugeridas, error = generar_plan_con_ia(texto_manual, api_key_usar)
-                                if error:
-                                    st.error(f"❌ {error}")
-                                elif not tareas_sugeridas:
-                                    st.warning("La IA no encontró tareas de mantenimiento preventivo claras en este manual.")
-                                else:
-                                    st.session_state[f"tareas_ia_{m.get('id')}"] = tareas_sugeridas
-
-                tareas_ia = st.session_state.get(f"tareas_ia_{m.get('id')}")
-                if tareas_ia:
-                    st.write("**Tareas sugeridas — revisá y ajustá antes de cargarlas:**")
-                    tareas_editadas = st.data_editor(
-                        tareas_ia,
-                        column_config={
-                            "tarea": "Tarea",
-                            "frecuencia_dias": st.column_config.NumberColumn("Frecuencia (días)", min_value=1, step=1),
-                            "nota": "Nota de la IA"
-                        },
-                        num_rows="dynamic",
-                        key=f"editor_ia_{m.get('id')}",
-                        use_container_width=True
-                    )
-                    if st.button("✅ Cargar estas tareas al Plan Preventivo", key=f"cargar_ia_{m.get('id')}"):
-                        hoy = datetime.now().date()
-                        # Agrupamos por frecuencia: todas las tareas con la misma
-                        # frecuencia recomendada por el fabricante forman UN plan
-                        # con varias actividades, en vez de una fila suelta cada una.
-                        grupos_por_frecuencia = {}
-                        for t in tareas_editadas:
-                            if not t.get("tarea") or not t.get("frecuencia_dias"):
-                                continue
-                            grupos_por_frecuencia.setdefault(int(t["frecuencia_dias"]), []).append(t["tarea"])
-
-                        planes_creados = 0
-                        for frecuencia, lista_actividades in grupos_por_frecuencia.items():
-                            proxima = hoy + timedelta(days=frecuencia)
-                            plan_creado = insert_plan({
-                                "maquina_id": m.get("id"),
-                                "nombre_plan": f"Preventivo cada {frecuencia} días (según manual)",
-                                "frecuencia_dias": frecuencia,
-                                "ultima_ejecucion": None,
-                                "proxima_ejecucion": proxima.strftime("%Y-%m-%d")
-                            })
-                            plan_id = plan_creado[0]["id"] if plan_creado else None
-                            for actividad in lista_actividades:
-                                insert_actividad({"plan_id": plan_id, "actividad": actividad})
-                            planes_creados += 1
-
-                        st.session_state.planes = get_planes()
-                        st.session_state.plan_actividades = get_actividades()
-                        del st.session_state[f"tareas_ia_{m.get('id')}"]
-                        st.success(f"✅ {planes_creados} plan(es) preventivo(s) creado(s) en {m.get('nombre')}, agrupando {len(tareas_editadas)} actividad(es) por frecuencia.")
-                        st.rerun()
+    todas = st.session_state.get("maquinas", [])
+    if not todas:
+        ui.estado_vacio("Todavía no hay máquinas cargadas.", "Usá «+ Nueva máquina» para cargar la primera.")
+        return
+    seleccion = st.session_state.get("maq_sel_id")
+    maquina = next((m for m in todas if m["id"] == seleccion), None) if seleccion is not None else None
+    if maquina:
+        _ficha(maquina)
+    else:
+        _lista(todas)
