@@ -7,9 +7,10 @@ from database.conection import (
 )
 
 
-def render_planes():
-    st.title("🗓️ Plan de Mantenimiento Preventivo")
-    st.write("Un plan agrupa varias actividades bajo una misma frecuencia — ej: 'Extrusora 001, cada 30 días' con 5 actividades adentro.")
+def render_planes(mostrar_titulo=True):
+    if mostrar_titulo:
+        st.title("🗓️ Plan de Mantenimiento Preventivo")
+    st.caption("Un plan agrupa varias actividades bajo una misma frecuencia — ej: 'Extrusora 001, cada 30 días' con 5 actividades adentro.")
 
     maquinas = st.session_state.get("maquinas", [])
     planes = st.session_state.get("planes", [])
