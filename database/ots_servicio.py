@@ -172,7 +172,7 @@ def cambiar_estado(ot, nuevo_estado, motivo_bloqueo=None, extra=None, forzar=Fal
     patch["estado"] = nuevo_estado
     patch["motivo_bloqueo"] = (motivo_bloqueo or "").strip() if nuevo_estado == "Bloqueada" else None
     recien_completada = nuevo_estado == "Completada" and ot.get("estado") != "Completada"
-    if recien_completada and not ot.get("fecha_fin"):
+    if recien_completada and not ot.get("fecha_fin") and not patch.get("fecha_fin"):
         patch["fecha_fin"] = ahora.isoformat()
     if forzar and usuario:
         nota = f"[Cierre forzado por {usuario.get('nombre') or 'administrador'} el {ahora:%d/%m/%Y %H:%M}]"
