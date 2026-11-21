@@ -105,8 +105,9 @@ def _sincronizar_cierre_preventivo(ot_obj):
         pass
 
 
-def render_ots(usuario):
-    st.title("⚙️ Gestión de Órdenes de Trabajo (OT)")
+def render_ots(usuario, mostrar_titulo=True):
+    if mostrar_titulo:
+        st.title("⚙️ Gestión de Órdenes de Trabajo (OT)")
 
     maquinas = st.session_state.get("maquinas", [])
     # NUEVO: ots y repuestos se leen con caché corta (15s) en vez de depender
