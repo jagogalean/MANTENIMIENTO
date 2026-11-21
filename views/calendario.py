@@ -282,7 +282,7 @@ def render_calendario(mostrar_titulo=True):
         st.warning("Registrá al menos una máquina primero.")
         return
     if not planes:
-        st.warning("Todavía no hay tareas cargadas en '🗓️ Plan Preventivo'. Cargá al menos una para poder generar el calendario.")
+        st.warning("Todavía no hay tareas cargadas en Preventivo → Planes. Cargá al menos una para poder generar el calendario.")
         return
 
     map_maquina_nombre = {m["id"]: m["nombre"] for m in maquinas}
@@ -301,7 +301,7 @@ def render_calendario(mostrar_titulo=True):
     nombre_empresa = config_empresa.get("nombre_empresa", "") or ""
     logo_bytes = base64.b64decode(config_empresa["logo_base64"]) if config_empresa.get("logo_base64") else None
     if not nombre_empresa and not logo_bytes:
-        st.caption("💡 Podés cargar el logo y nombre de tu empresa una sola vez en '📑 Reportes' → Membrete.")
+        st.caption("💡 Podés cargar el logo y nombre de tu empresa una sola vez en Reportes → Membrete.")
 
     maquinas_filtradas_ids = None if maquina_sel == "Todas las Máquinas" else {dict_maquinas[maquina_sel]}
     titulo_maquina = "Todas las Máquinas" if maquina_sel == "Todas las Máquinas" else maquina_sel
