@@ -7,8 +7,6 @@ import uuid
 import streamlit as st
 
 from database import rutinas_logica as R
-from database import excel_marca as M
-from database import rutinas_excel as RX
 from database import rutinas_publica as DB
 
 ICONO = {"OK": "✅", "NO_OK": "❌", "NA": "➖"}
@@ -342,12 +340,6 @@ def _enviar(zona, por_id):
         return
     if r.get("estado") == "ok":
         s["rp_final"] = {"fallas": len(r.get("fallas") or []), "controles": len(payload)}
-        try:
-            s["rp_final"]["excel"] = RX.excel_ronda(zona["nombre"], sesion["nombre"], s["rp_uuid"], R.hoy_paraguay(), M.hoy_paraguay().replace(tzinfo=None),
-                                                    payload, por_id, r.get("fallas"))
-            s["rp_final"]["excel_nombre"] = M.nombre_archivo("Ronda_" + zona["nombre"])
-        except Exception:
-            pass                                   # el Excel es un extra: si falla, la ronda ya quedó guardada
         s["rp_fase"] = "fin"
         st.cache_data.clear()
         st.rerun()
@@ -365,9 +357,6 @@ def _fin():
     st.success(f"✅ Ronda enviada ({f['controles']} controles). ¡Gracias, {s['rp_sesion']['nombre']}!")
     if f["fallas"]:
         st.warning(f"Se le avisó a mantenimiento de {f['fallas']} problema(s).")
-    if f.get("excel"):
-        st.download_button("📥 Descargar el Excel de esta ronda", data=f["excel"], file_name=f["excel_nombre"], key="rp_excel_ronda",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     if st.button("Volver a la lista", type="primary", key="rp_volver_lista"):
         _reiniciar(todo=False)
         st.rerun()
