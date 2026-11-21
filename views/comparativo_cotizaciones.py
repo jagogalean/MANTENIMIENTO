@@ -151,7 +151,7 @@ def _cb_quitar_cotizacion(indice):
 # Pantalla
 # ----------------------------------------------------------------
 def render_comparativo_cotizaciones(usuario):
-    st.title("⚖️ Comparativo de Cotizaciones")
+    st.title("Comparativo de cotizaciones")
     st.write(
         "Cargá 2 o más cotizaciones de proveedores, compará en igualdad de condiciones (moneda e IVA) "
         "y generá un informe técnico que se envía a Compras."
