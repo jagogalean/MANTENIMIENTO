@@ -75,8 +75,8 @@ def _fmt_gs(monto):
 
 
 def render_presupuesto(usuario):
-    st.title("💰 Presupuesto de Mantenimiento")
-    st.write("Compará lo que Vitopel te autorizó a gastar contra lo que realmente estás gastando, mes a mes.")
+    st.title("Presupuesto")
+    st.caption("Compará lo que Vitopel te autorizó a gastar contra lo que realmente estás gastando, mes a mes.")
 
     ots = st.session_state.get("ots", [])
     ot_repuestos = st.session_state.get("ot_repuestos", [])
