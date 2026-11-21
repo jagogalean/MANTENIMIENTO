@@ -117,10 +117,24 @@ def get_ot_repuestos():
 
 # ----------------- AUTENTICACIÓN Y USUARIOS (roles) -----------------
 def login_usuario(email: str, password: str):
-    return supabase.auth.sign_in_with_password({"email": email, "password": password})
+    """Verifica email y contraseña con Supabase Auth.
+
+    IMPORTANTE (corrección H-01 de la auditoría): el inicio de sesión se hace
+    con un cliente TEMPORAL que se descarta enseguida. El cliente compartido
+    `supabase` (cacheado para todos los usuarios) nunca inicia ni cierra
+    sesión, así el login de una persona no cambia los permisos de las
+    consultas de las demás.
+    """
+    url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
+    clave = (st.secrets.get("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_ANON_KEY", ""))
+             or st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", "")))
+    cliente_temporal = create_client(url, clave)
+    return cliente_temporal.auth.sign_in_with_password({"email": email, "password": password})
 
 def logout_usuario():
-    supabase.auth.sign_out()
+    """La sesión de cada usuario vive solo en st.session_state: cerrar sesión es
+    olvidarla (lo hace app.py). No se toca el cliente compartido."""
+    return None
 
 def get_usuario_by_id(user_id: str):
     response = supabase.table("usuarios").select("*").eq("id", user_id).execute()
