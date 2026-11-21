@@ -134,7 +134,7 @@ def _rango_periodo(opcion, hoy, d1=None, d2=None):
 # Pantalla
 # ----------------------------------------------------------------
 def render_productividad(usuario):
-    st.title("🏭 Productividad")
+    st.title("Productividad")
     if not P.puede_ver(usuario):
         st.warning("No tenés acceso a esta pantalla.")
         return
