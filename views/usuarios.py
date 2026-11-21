@@ -1,69 +1,80 @@
+"""Usuarios: quién entra a la app y con qué rol."""
 import streamlit as st
-from database.conection import get_usuarios, insert_usuario, delete_usuario
 
-# Roles disponibles. "operador" solo reporta fallas; "logistica" carga y ve Productividad (nada más);
-# "consulta_asistencia" solo LEE la asistencia y las horas del personal (sin salarios ni montos).
-# "asistencia" tiene acceso COMPLETO a Asistencia (incluye salarios) y a nada más.
+from database.conection import get_usuarios, insert_usuario, delete_usuario
+from views import ui
+
+# "operador" solo reporta fallas; "logistica" carga y ve Productividad; "consulta_asistencia" solo LEE
+# la asistencia (sin salarios); "asistencia" tiene acceso completo a Asistencia (con salarios).
 ROLES = ["admin", "gerente", "tecnico", "operador", "logistica", "asistencia", "consulta_asistencia"]
+NOMBRE_ROL = {
+    "admin": "Coordinador (todo)", "gerente": "Gerencia (solo mira)", "tecnico": "Técnico (sus OTs)",
+    "operador": "Operador (reporta fallas)", "logistica": "Logística (productividad)",
+    "asistencia": "Asistencia (completo, con salarios)", "consulta_asistencia": "Consulta de asistencia (sin salarios)",
+}
 
 
 def render_usuarios():
-    st.title("🔐 Usuarios del Sistema")
-    st.info(
-        "Paso previo: creá el usuario en Supabase → Authentication → Users → Add User "
-        "(con email y contraseña). Copiá el UID que te genera y pegalo acá para asignarle un rol."
-    )
-
+    yo = st.session_state.get("usuario_actual") or {}
+    ui.encabezado("Usuarios", "Quién puede entrar a la app y qué ve cada uno.")
     tecnicos = st.session_state.get("tecnicos", [])
-    usuarios = get_usuarios()
+    mapa_tec = {t["id"]: t["nombre"] for t in tecnicos}
 
-    with st.expander("+ Vincular nuevo usuario a un rol"):
-        with st.form("form_nuevo_usuario", clear_on_submit=True):
-            uid = st.text_input("UID de Supabase Auth *", placeholder="Ej: 3fa85f64-5717-4562-b3fc-2c963f66afa6")
-            nombre = st.text_input("Nombre para mostrar *")
-            rol = st.selectbox("Rol", ROLES, help="admin: todo · gerente: paneles, reportes y productividad (solo mira) · tecnico: sus OTs · "
-                                                   "operador: reporta fallas · logistica: carga y ve Productividad · asistencia: acceso completo a Asistencia (con salarios) · consulta_asistencia: solo lee la asistencia (sin salarios)")
-            dict_tec = {t["nombre"]: t["id"] for t in tecnicos}
-            tecnico_sel = st.selectbox("Vincular a Técnico (solo si el rol es 'tecnico')", ["Ninguno"] + list(dict_tec.keys()))
+    mensaje = st.session_state.pop("usr_mensaje", None)
+    if mensaje:
+        st.success(mensaje)
 
-            if st.form_submit_button("Guardar Usuario"):
-                if not uid.strip() or not nombre.strip():
-                    st.error("❌ El UID y el nombre son obligatorios.")
-                elif rol == "tecnico" and tecnico_sel == "Ninguno":
-                    st.error("❌ Un usuario con rol 'tecnico' debe estar vinculado a un técnico (así filtra sus OTs).")
-                else:
-                    try:
-                        insert_usuario({
-                            "id": uid.strip(),
-                            "nombre": nombre,
-                            "rol": rol,
-                            "tecnico_id": dict_tec.get(tecnico_sel) if tecnico_sel != "Ninguno" else None
-                        })
-                        st.success(f"✅ Usuario '{nombre}' vinculado como {rol}.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ No se pudo guardar. ¿El UID ya existe en Supabase Auth? Detalle: {e}")
-
-    st.markdown("---")
-    st.subheader("Usuarios Actuales")
-
-    if not usuarios:
-        st.info("Todavía no hay usuarios vinculados (aparte de vos, que ya estás logueado).")
+    try:
+        usuarios = get_usuarios()
+    except Exception as e:
+        ui.error_amigable("No se pudo leer la lista de usuarios.", e)
         return
 
-    dict_tec_nombre = {t["id"]: t["nombre"] for t in tecnicos}
-    for u in usuarios:
-        col_i, col_a = st.columns([0.8, 0.2])
-        with col_i:
-            tec_txt = ""
+    with st.expander("Agregar un usuario"):
+        st.markdown(
+            "1. En Supabase: **Authentication → Users → Add user**, con su email y una contraseña.\n"
+            "2. Copiá el **UID** que aparece en la lista de usuarios de Supabase.\n"
+            "3. Pegalo acá abajo y elegí el rol."
+        )
+        with st.form("form_nuevo_usuario", clear_on_submit=True):
+            uid = st.text_input("UID de Supabase *", placeholder="3fa85f64-5717-4562-b3fc-2c963f66afa6")
+            nombre = st.text_input("Nombre para mostrar *")
+            c1, c2 = st.columns(2)
+            rol = c1.selectbox("Rol", ROLES, index=2, format_func=lambda r: NOMBRE_ROL[r])
+            tecnico_id = c2.selectbox("Técnico vinculado (solo rol Técnico)", [None] + list(mapa_tec.keys()),
+                                      format_func=lambda i: "Ninguno" if i is None else mapa_tec[i])
+            if st.form_submit_button("Guardar usuario", type="primary"):
+                if not uid.strip() or not nombre.strip():
+                    st.error("El UID y el nombre son obligatorios.")
+                elif rol == "tecnico" and tecnico_id is None:
+                    st.error("Un usuario Técnico tiene que estar vinculado a un técnico (así ve sus OTs).")
+                else:
+                    try:
+                        insert_usuario({"id": uid.strip(), "nombre": nombre.strip(), "rol": rol,
+                                        "tecnico_id": tecnico_id if rol == "tecnico" else None})
+                    except Exception as e:
+                        ui.error_amigable("No se pudo guardar. Revisá que el UID exista en Supabase y no esté ya cargado.", e)
+                    else:
+                        st.session_state["usr_mensaje"] = f"Usuario «{nombre.strip()}» agregado como {NOMBRE_ROL[rol]}."
+                        st.rerun()
+
+    if not usuarios:
+        ui.estado_vacio("Todavía no hay otros usuarios cargados.")
+        return
+
+    for u in sorted(usuarios, key=lambda u: (ROLES.index(u.get("rol")) if u.get("rol") in ROLES else 99, str(u.get("nombre")))):
+        with st.container(border=True):
+            c1, c2 = st.columns([5, 1.3], vertical_alignment="center")
+            extra = ""
             if u.get("rol") == "tecnico":
-                tec_txt = f" · Técnico vinculado: {dict_tec_nombre.get(u.get('tecnico_id'), '⚠️ sin vincular')}"
-            st.markdown(f"""
-            <div class='industrial-panel'>
-                <strong>{u.get('nombre')}</strong> — <small style='color:#38BDF8;'>{str(u.get('rol')).upper()}</small>{tec_txt}
-            </div>
-            """, unsafe_allow_html=True)
-        with col_a:
-            if st.button("🗑️ Quitar", key=f"del_user_{u.get('id')}"):
-                delete_usuario(u.get("id"))
-                st.rerun()
+                extra = f" · Técnico: {ui.texto_md(mapa_tec.get(u.get('tecnico_id'), 'sin vincular'))}"
+            c1.markdown(f"**{ui.texto_md(u.get('nombre'))}**  \n:gray[{NOMBRE_ROL.get(u.get('rol'), u.get('rol'))}{extra}]")
+            with c2:
+                if u.get("id") == yo.get("id"):
+                    st.caption("Sos vos")
+                elif ui.boton_confirmar("Quitar", f"del_user_{u.get('id')}",
+                                        f"¿Quitarle el acceso a **{ui.texto_md(u.get('nombre'))}**? Su cuenta de Supabase no se borra.",
+                                        texto_confirmar="Sí, quitar acceso", use_container_width=True):
+                    delete_usuario(u.get("id"))
+                    st.session_state["usr_mensaje"] = "Acceso quitado."
+                    st.rerun()
