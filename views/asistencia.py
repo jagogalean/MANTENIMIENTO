@@ -151,7 +151,7 @@ def _set_flash(tipo, texto):
 # Pantalla
 # ----------------------------------------------------------------
 def render_asistencia(usuario):
-    st.title("🕒 Asistencia y Horas Extras")
+    st.title("Asistencia y horas extras")
     st.write("Cargá la asistencia del personal, y la app calcula las horas ordinarias, extras, de domingo y de feriado y lo que corresponde pagar.")
     if usuario.get("rol") not in ROLES_ASISTENCIA:
         st.warning("Esta pantalla está disponible solo para el administrador y el usuario de asistencia (contiene salarios).")
