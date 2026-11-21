@@ -7,6 +7,7 @@ Los colores y la fuente salen de .streamlit/config.toml (tema global).
 """
 import html
 import logging
+from datetime import datetime
 
 import streamlit as st
 
@@ -104,3 +105,61 @@ def formato_gs(valor):
 def con_contador(texto, cantidad):
     """'Órdenes de trabajo' + 3 -> 'Órdenes de trabajo (3)' (sin contador si es cero)."""
     return f"{texto} ({cantidad})" if cantidad else texto
+
+
+# ------------------------------------------------------------------
+# Fecha y hora de la planta (Paraguay), sin importar dónde corra el servidor
+# ------------------------------------------------------------------
+def ahora():
+    """Fecha y hora actual en Asunción, sin zona (para comparar con las fechas guardadas)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Asuncion")).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
+
+
+def hoy():
+    return ahora().date()
+
+
+def a_fecha(valor):
+    """'2026-11-20' o '2026-11-20T08:00:00' -> date. None si no se puede leer."""
+    if not valor:
+        return None
+    try:
+        return datetime.fromisoformat(str(valor).replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
+        try:
+            return datetime.strptime(str(valor)[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return None
+
+
+def a_datetime(valor):
+    if not valor:
+        return None
+    try:
+        d = datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
+        return d.replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return None
+
+
+def fecha_corta(valor):
+    d = a_fecha(valor)
+    return d.strftime("%d/%m/%Y") if d else "—"
+
+
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+         "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+
+def fecha_larga(d):
+    """jueves 20 de noviembre"""
+    return f"{DIAS[d.weekday()]} {d.day} de {MESES[d.month - 1]}"
+
+
+def nombre_mes(d):
+    return MESES[d.month - 1]
