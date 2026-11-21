@@ -1,90 +1,75 @@
+"""
+Ficha pública de una máquina (se abre al escanear su QR, sin iniciar sesión).
+Pensada para el celular: equipo, aviso de falla con botones grandes y
+próximo preventivo. Todo dato que viene de la base se muestra escapado.
+"""
 import streamlit as st
-from datetime import datetime
+
 from database.conection_publica import get_ficha_publica_equipo, get_planes_publico_equipo, insertar_solicitud_falla
+from database.ots_servicio import con_marca_parada
+from views import ui
 
-
-def _fmt_fecha(fecha_str):
-    if not fecha_str:
-        return "No hay una programada"
-    try:
-        return datetime.strptime(fecha_str, "%Y-%m-%d").strftime("%d/%m/%Y")
-    except (TypeError, ValueError):
-        return fecha_str
+URGENCIA = {"Puede esperar": "Baja", "Hoy": "Media", "Ya mismo": "Alta"}
 
 
 def render_vista_publica(equipo_id):
-    """
-    Pantalla pública que se muestra cuando alguien escanea el QR de una
-    máquina (URL con ?equipo=ID). No requiere iniciar sesión.
-    """
-    st.markdown(
-        "<div style='color:#38BDF8; font-family:monospace; font-size:16px; font-weight:bold; "
-        "letter-spacing:2px;'>⚙️ MANTENIMIENTO — Ficha del Equipo</div>",
-        unsafe_allow_html=True
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.caption("VITOPEL · MANTENIMIENTO")
+    st.title("Avisar una falla")
 
-    equipo = get_ficha_publica_equipo(equipo_id)
+    try:
+        equipo = get_ficha_publica_equipo(equipo_id)
+    except Exception as e:
+        ui.error_amigable("No se pudo cargar la ficha del equipo. Avisá directamente a mantenimiento.", e)
+        equipo = None
 
     if not equipo:
-        st.error(f"❌ No se encontró ningún equipo con el ID **{equipo_id}**. Verificá el código QR o avisale directamente a mantenimiento.")
+        st.error("No encontramos este equipo. Revisá el código QR o avisá directamente a mantenimiento.")
     else:
-        st.markdown(f"""
-        <div class='industrial-panel'>
-            <h3 style='margin-top:0; color:#E5E9EC;'>{equipo.get('nombre')}</h3>
-            <span>🏷️ <strong>ID:</strong> {equipo.get('id')}</span><br>
-            <span>📍 <strong>Ubicación:</strong> {equipo.get('ubicacion') or 'No especificada'}</span>
-        </div>
-        """, unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(f"**{ui.texto_md(equipo.get('nombre'))}**")
+            st.caption(f"Ubicación: {ui.texto_md(equipo.get('ubicacion') or 'no especificada')}")
 
-        # Cada plan preventivo se muestra por separado (si el equipo tiene
-        # más de uno, ej: uno mensual y otro quincenal, no se mezclan).
-        planes = get_planes_publico_equipo(equipo_id)
-        st.markdown("##### 🗓️ Mantenimiento Preventivo")
-        if not planes:
-            st.caption("Este equipo no tiene planes preventivos cargados todavía.")
-        else:
-            for p in planes:
-                st.markdown(f"""
-                <div class='industrial-panel'>
-                    <strong>{p.get('nombre_plan')}</strong> <small style='color:#7C8894;'>(cada {p.get('frecuencia_dias')} días)</small><br>
-                    <span>🛠️ Último: {_fmt_fecha(p.get('ultima_ejecucion'))} · 🗓️ Próximo: {_fmt_fecha(p.get('proxima_ejecucion'))}</span>
-                </div>
-                """, unsafe_allow_html=True)
+    enviado = st.session_state.pop("publico_enviado", False)
+    if enviado:
+        st.success("Aviso enviado. Mantenimiento lo va a revisar. Gracias.")
 
-    st.markdown("---")
-    st.subheader("🚨 Reportar Avería / Falla")
-    st.caption("Contanos qué está pasando con esta máquina. No hace falta iniciar sesión.")
-
-    with st.form("form_reporte_publico", clear_on_submit=True):
-        operario = st.text_input("Tu nombre / sector (opcional)", placeholder="Ej: Juan - Línea 2")
-        descripcion = st.text_area("Descripción del problema *", placeholder="¿Qué está pasando? Ruido, olor, parada, vibración, etc.")
-        prioridad = st.selectbox("Prioridad", ["Baja", "Media", "Alta"], index=1)
-
-        submit = st.form_submit_button("📨 Enviar Reporte")
-        if submit:
-            if not descripcion.strip():
-                st.error("❌ Describí el problema antes de enviar.")
-            elif not equipo:
-                st.error("❌ No se puede reportar: no se encontró el equipo.")
+    if equipo:
+        with st.form("form_reporte_publico", clear_on_submit=True):
+            descripcion = st.text_area("¿Qué está pasando? *", placeholder="Ej.: ruido fuerte en el motor, pierde aceite, no arranca")
+            parada = st.radio("¿La máquina está parada?", ["No, sigue andando", "Sí, está parada"], horizontal=True)
+            urgencia = st.radio("¿Qué tan urgente es?", list(URGENCIA.keys()), index=1, horizontal=True)
+            operario = st.text_input("Tu nombre", placeholder="Nombre y apellido (opcional)")
+            enviar = st.form_submit_button("Enviar aviso", type="primary", use_container_width=True)
+        if enviar:
+            if not (descripcion or "").strip():
+                st.error("Contá qué está pasando antes de enviar.")
             else:
                 try:
                     insertar_solicitud_falla({
                         "equipo_id": equipo_id,
-                        "operario": operario.strip() or None,
-                        "descripcion": descripcion.strip(),
-                        "prioridad": prioridad,
-                        "fecha_reporte": datetime.now().isoformat()
+                        "operario": (operario or "").strip() or None,
+                        "descripcion": con_marca_parada(descripcion.strip()[:1000], parada.startswith("Sí")),
+                        "prioridad": URGENCIA[urgencia],
+                        "fecha_reporte": ui.ahora().isoformat(),
                     })
-                    st.success("✅ Reporte enviado correctamente. El equipo de mantenimiento lo va a revisar.")
                 except Exception as e:
-                    st.error(f"❌ No se pudo enviar el reporte. Intentá de nuevo o avisá directamente a mantenimiento. ({e})")
+                    ui.error_amigable("No se pudo enviar el aviso. Probá de nuevo o avisá directamente a mantenimiento.", e)
+                else:
+                    st.session_state["publico_enviado"] = True
+                    st.rerun()
 
-    st.markdown("---")
-    col_a, col_b, col_c = st.columns([0.3, 0.4, 0.3])
-    with col_b:
-        if st.button("🔐 Acceso Administrativo / Iniciar Sesión", use_container_width=True):
-            # Esta bandera hace que app.py ignore el parámetro ?equipo= de la URL
-            # y muestre la pantalla de login normal, sin perder el contexto.
-            st.session_state["forzar_login_admin"] = True
-            st.rerun()
+        try:
+            planes = get_planes_publico_equipo(equipo_id)
+        except Exception:
+            planes = []
+        if planes:
+            with st.expander("Mantenimiento preventivo de este equipo"):
+                for p in planes:
+                    st.markdown(f"**{ui.texto_md(p.get('nombre_plan'))}** · cada {p.get('frecuencia_dias')} días  \n"
+                                f"Último: {ui.fecha_corta(p.get('ultima_ejecucion'))} · "
+                                f"Próximo: {ui.fecha_corta(p.get('proxima_ejecucion'))}")
+
+    st.write("")
+    if st.button("Acceso del personal", type="tertiary"):
+        st.session_state["forzar_login_admin"] = True
+        st.rerun()
