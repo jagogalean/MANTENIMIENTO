@@ -268,9 +268,10 @@ def generar_excel_calendario_anual(tareas, map_maquina_nombre, anio, nombre_empr
 # ---------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------
-def render_calendario():
-    st.title("📅 Calendario de Mantenimiento Preventivo")
-    st.write("Vista previa acá mismo, y descarga en Excel si la necesitás para imprimir o compartir.")
+def render_calendario(mostrar_titulo=True):
+    if mostrar_titulo:
+        st.title("📅 Calendario de Mantenimiento Preventivo")
+    st.caption("Vista previa acá mismo, y descarga en Excel si la necesitás para imprimir o compartir.")
 
     maquinas = st.session_state.get("maquinas", [])
     planes = st.session_state.get("planes", [])
