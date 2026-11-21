@@ -93,9 +93,10 @@ def _evaluar(planes, mapa, desde, hasta, params, presupuesto):
 # ----------------------------------------------------------------
 # Pantalla
 # ----------------------------------------------------------------
-def render_programacion(usuario):
-    st.title("🗓️ Programación de Preventivos")
-    st.write(
+def render_programacion(usuario, mostrar_titulo=True):
+    if mostrar_titulo:
+        st.title("🗓️ Programación de Preventivos")
+    st.caption(
         "Asigná la fecha de arranque de cada plan y mirá cómo queda la carga del año: horas-hombre, paradas y gasto. "
         "El objetivo es que los trabajos pesados y los gastos grandes no caigan todos juntos."
     )
