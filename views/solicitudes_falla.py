@@ -30,9 +30,10 @@ def _generar_codigo_ot(ots):
     return f"{prefijo}{siguiente:04d}"
 
 
-def render_solicitudes_falla():
-    st.title("📨 Reportes desde QR (sin login)")
-    st.write("Reportes enviados por cualquiera que escaneó el QR de una máquina, sin necesidad de iniciar sesión.")
+def render_solicitudes_falla(mostrar_titulo=True):
+    if mostrar_titulo:
+        st.title("📨 Reportes desde QR (sin login)")
+    st.caption("Reportes enviados por cualquiera que escaneó el QR de una máquina, sin necesidad de iniciar sesión.")
 
     maquinas = st.session_state.get("maquinas", [])
     map_maquina = {m["id"]: m["nombre"] for m in maquinas}
