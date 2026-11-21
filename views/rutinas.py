@@ -1,11 +1,12 @@
-import io
 import random
 from datetime import timedelta
 
 import pandas as pd
 import streamlit as st
 
+from database import excel_marca as M
 from database import rutinas_db as db
+from database import rutinas_excel as RX
 from database import rutinas_logica as R
 
 TIPOS_PUNTO = {"OK / No OK": "ok", "Valor medido": "numero"}
@@ -83,7 +84,7 @@ def render_rutinas(usuario):
     if flash:
         getattr(st, flash[0])(flash[1])
     if seccion.startswith("📊"):
-        _seccion_cumplimiento(d)
+        _seccion_cumplimiento(d, (usuario or {}).get('nombre'))
     elif seccion.startswith("📋"):
         _seccion_rutinas(d)
     elif seccion.startswith("👷"):
@@ -472,7 +473,7 @@ def filas_respuestas(ejec, resp):
              "ronda_hora": por_id[r["ejecucion_id"]].get("creado_en")} for r in resp if r["ejecucion_id"] in por_id]
 
 
-def _seccion_cumplimiento(d):
+def _seccion_cumplimiento(d, usuario_nombre=None):
     desde, hasta = _periodo()
     if hasta < desde:
         st.error("La fecha «Hasta» no puede ser anterior a «Desde».")
@@ -530,7 +531,7 @@ def _seccion_cumplimiento(d):
                     st.error(f"No se pudo abrir la foto: {e}")
     _lecturas(d, filas)
     if filas:
-        st.download_button("⬇️ Descargar los resultados (Excel)", data=_excel(ejec, filas), file_name=f"rondas_{desde:%Y%m%d}_{hasta:%Y%m%d}.xlsx", key="rut_excel",
+        st.download_button("⬇️ Descargar los resultados (Excel)", data=RX.excel_periodo(ejec, filas, desde, hasta, usuario_nombre), file_name=M.nombre_archivo("Rondas", desde, hasta), key="rut_excel",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
@@ -553,16 +554,3 @@ def _lecturas(d, filas):
             graf["Máximo"] = float(p["maximo"])
         st.line_chart(graf, x="Fecha", y=[c for c in graf.columns if c != "Fecha"])
         st.dataframe(df, hide_index=True, width="stretch")
-
-
-def _excel(ejec, filas):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as w:
-        pd.DataFrame([{"ronda_id": e["id"], "fecha": R.a_fecha(e["fecha"]), "zona": e.get("zona_nombre"), "operador": e["operador_nombre"]} for e in ejec]).to_excel(w, index=False, sheet_name="Rondas")
-        pd.DataFrame([{"ronda_id": r["ejecucion_id"], "fecha": R.a_fecha(r["fecha"]), "zona": r["zona"], "operador": r["operador"], "codigo": r.get("item_codigo"), "control": r["item_titulo"],
-                       "resultado": r["resultado"], "comentario": r.get("comentario"), "reporte_falla_id": r.get("falla_id"), "con_foto": bool(r.get("foto_ruta"))} for r in filas]
-                     ).to_excel(w, index=False, sheet_name="Controles")
-        pd.DataFrame([{"ronda_id": r["ejecucion_id"], "fecha": R.a_fecha(r["fecha"]), "zona": r["zona"], "operador": r["operador"], "codigo": r.get("item_codigo"), "control": r["item_titulo"],
-                       "punto": x.get("texto"), "tipo": x.get("tipo"), "unidad": x.get("unidad"), "valor": x.get("valor"), "resultado": x.get("resultado"), "fuera_de_rango": bool(x.get("fuera_rango")),
-                       "rango": x.get("rango")} for r in filas for x in (r.get("detalle") or [])]).to_excel(w, index=False, sheet_name="Lecturas")
-    return buffer.getvalue()
