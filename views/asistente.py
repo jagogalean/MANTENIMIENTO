@@ -150,8 +150,9 @@ Pendientes de hoy:
         return f"⚠️ No se pudo generar el resumen con IA: {e}"
 
 
-def render_asistente():
-    st.title("🧭 Asistente del Día")
+def render_asistente(mostrar_titulo=True):
+    if mostrar_titulo:
+        st.title("🧭 Asistente del Día")
     hoy = datetime.now().strftime("%d/%m/%Y")
     st.write(f"Agenda priorizada para hoy · {hoy}")
 
