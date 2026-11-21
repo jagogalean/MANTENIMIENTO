@@ -1,66 +1,62 @@
 import streamlit as st
-from datetime import datetime
 from database.conection import insert_falla, update_falla, get_fallas
+from views import ui
 
 def render_fallas():
-    st.title("Fallas y Análisis de Causa Raíz (RCA)")
-    
+    ui.encabezado("Fallas y RCA", "Registro de fallas y análisis de causa raíz (5 porqués, Ishikawa).")
+
     if not st.session_state.maquinas:
-        st.warning("Carga al menos una máquina antes de registrar fallas.")
+        ui.estado_vacio("Todavía no hay máquinas cargadas.")
         return
 
-    # Vista de detalle de falla única para RCA
-    if "falla_abierta_id" in st.session_state and st.session_state.falla_abierta_id:
+    # Detalle de una falla (análisis RCA)
+    if st.session_state.get("falla_abierta_id"):
         render_falla_detalle(st.session_state.falla_abierta_id)
         return
 
-    # Formulario para registrar fallas
-    if st.checkbox("+ Registrar Nueva Falla"):
+    dict_m = {m["id"]: m["nombre"] for m in st.session_state.maquinas}
+    with st.expander("Registrar nueva falla"):
         with st.form("form_nueva_falla", clear_on_submit=True):
-            dict_m = {m["id"]: m["nombre"] for m in st.session_state.maquinas}
-            maquina_id = st.selectbox("Seleccione la Máquina *", list(dict_m.keys()), format_func=lambda x: dict_m[x])
-            fecha = st.date_input("Fecha", value=datetime.now().date()).strftime("%Y-%m-%d")
-            tecnico = st.text_input("Técnico Asignado")
-            sintomas = st.text_input("Síntomas Previos", placeholder="¿Hubo algún aviso antes?")
-            descripcion = st.text_area("Descripción de la Falla *", placeholder="¿Qué ocurrió y qué daños se observan?")
-            
-            submit = st.form_submit_button("Registrar Falla")
-            if submit:
-                if not descripcion.strip():
-                    st.error("La descripción es obligatoria.")
+            maquina_id = st.selectbox("Máquina *", list(dict_m.keys()), index=None, placeholder="Escribí para buscar",
+                                      format_func=lambda x: dict_m[x])
+            c1, c2 = st.columns(2)
+            fecha = c1.date_input("Fecha", value=ui.hoy(), format="DD/MM/YYYY")
+            tecnico = c2.text_input("Técnico asignado")
+            sintomas = st.text_input("Síntomas previos", placeholder="¿Hubo algún aviso antes?")
+            descripcion = st.text_area("Descripción de la falla *", placeholder="¿Qué ocurrió y qué daños se observan?")
+            if st.form_submit_button("Registrar falla", type="primary"):
+                if maquina_id is None or not descripcion.strip():
+                    st.error("Elegí la máquina y describí la falla.")
                 else:
-                    payload = {
-                        "maquina_id": maquina_id, "fecha_deteccion": fecha, "tecnico": tecnico,
+                    insert_falla({
+                        "maquina_id": maquina_id, "fecha_deteccion": fecha.strftime("%Y-%m-%d"), "tecnico": tecnico,
                         "sintomas": sintomas, "descripcion": descripcion, "estado": "Abierta",
                         "metodo_rca": None, "rca": {}, "causa_raiz": "", "accion": ""
-                    }
-                    insert_falla(payload)
+                    })
                     st.session_state.fallas = get_fallas()
-                    st.success("Falla registrada correctamente.")
+                    st.success("Falla registrada.")
                     st.rerun()
 
-    # Tabla General de Control de Fallas
-    st.markdown("<br>", unsafe_allow_html=True)
-    if not st.session_state.fallas:
-        st.info("No hay registros de fallas activos.")
-    else:
-        dict_m = {m["id"]: m["nombre"] for m in st.session_state.maquinas}
-        for f in st.session_state.fallas:
-            m_nombre = dict_m.get(f.get("maquina_id"), "Máquina Desconocida")
-            
-            col_t, col_b = st.columns([0.8, 0.2])
-            with col_t:
-                st.markdown(f"""
-                <div class='industrial-panel'>
-                    <strong>{m_nombre}</strong> — <small>{f.get('fecha_deteccion')}</small><br>
-                    <span style='color: #C7CFD6;'>{(f.get('descripcion') or '')[:80]}...</span><br>
-                    <span>Estado: <code>{f.get('estado')}</code></span>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_b:
-                if st.button("🔍 Analizar / RCA", key=f"view_{f.get('id')}"):
-                    st.session_state.falla_abierta_id = f.get("id")
-                    st.rerun()
+    fallas = st.session_state.fallas
+    if not fallas:
+        ui.estado_vacio("No hay fallas registradas.")
+        return
+    filtro = st.pills("Estado", ["Abiertas", "Cerradas", "Todas"], default="Abiertas", key="fallas_filtro",
+                      label_visibility="collapsed") or "Abiertas"
+    lista = [f for f in fallas if filtro == "Todas" or (f.get("estado") == "Cerrada") == (filtro == "Cerradas")]
+    lista = sorted(lista, key=lambda f: str(f.get("fecha_deteccion") or ""), reverse=True)
+    if not lista:
+        st.caption("No hay fallas con este filtro.")
+    for f in lista:
+        with st.container(border=True):
+            c1, c2 = st.columns([5, 1.4], vertical_alignment="center")
+            c1.markdown(f"**{ui.texto_md(dict_m.get(f.get('maquina_id'), 'Máquina'))}** · {ui.fecha_corta(f.get('fecha_deteccion'))} "
+                        f"{ui.etiqueta_estado(f.get('estado'))}  \n{ui.texto_md((f.get('descripcion') or '')[:120])}")
+            if c2.button("Analizar" if f.get("estado") != "Cerrada" else "Ver análisis", key=f"view_{f.get('id')}",
+                         use_container_width=True):
+                st.session_state.falla_abierta_id = f.get("id")
+                st.rerun()
+
 
 def render_falla_detalle(falla_id):
     falla = next((f for f in st.session_state.fallas if f["id"] == falla_id), None)
@@ -68,7 +64,7 @@ def render_falla_detalle(falla_id):
         st.session_state.falla_abierta_id = None
         st.rerun()
         
-    if st.button("⬅️ Volver al listado"):
+    if st.button("← Volver al listado", type="tertiary"):
         st.session_state.falla_abierta_id = None
         st.rerun()
         
@@ -76,7 +72,7 @@ def render_falla_detalle(falla_id):
     m = dict_m.get(falla.get("maquina_id"), {})
     
     st.subheader(f"Análisis Falla: {m.get('nombre', '—')}")
-    st.info(f"**Descripción:** {falla.get('descripcion')}\n\n**Fecha:** {falla.get('fecha_deteccion')} | **Técnico:** {falla.get('tecnico')}")
+    st.info(f"**Descripción:** {ui.texto_md(falla.get('descripcion'))}\n\n**Fecha:** {ui.fecha_corta(falla.get('fecha_deteccion'))} · **Técnico:** {ui.texto_md(falla.get('tecnico') or '—')}")
     
     # 1. Selección de metodología RCA
     metodo = falla.get("metodo_rca")
@@ -121,7 +117,7 @@ def render_falla_detalle(falla_id):
             accion = st.text_area("Acción Correctiva / Preventiva *", value=falla.get("accion", ""), disabled=is_closed)
             
             if not is_closed:
-                save_rca = st.form_submit_button("🔒 Cerrar Falla Definitivamente")
+                save_rca = st.form_submit_button("Cerrar falla", type="primary")
                 if save_rca:
                     if not causa_raiz.strip() or not accion.strip():
                         st.error("Debe definir la causa raíz y las acciones correspondientes para el cierre.")
@@ -133,4 +129,5 @@ def render_falla_detalle(falla_id):
                         st.session_state.falla_abierta_id = None
                         st.rerun()
             else:
-                st.success("✅ Esta falla se encuentra actualmente Cerrada.")
+                st.form_submit_button("Falla cerrada", disabled=True)
+                st.success("Esta falla está cerrada.")
