@@ -257,6 +257,52 @@ def cumplimiento(items, respuestas, desde, hasta):
             "por_item": por_item, "total": total, "pendientes_hoy": pendientes}
 
 
+def detalle_cumplimiento(items, respuestas, desde, hasta):
+    """
+    «¿Se hizo o no?» control por control: una fila por cada vez que una rutina TOCABA en el período, con las mismas reglas que
+    cumplimiento() (diaria: cada día desde que se creó hasta hoy; semanal: cada semana completa, o la de hoy si ya se hizo).
+    Devuelve [{fecha, semana, zona, item_id, codigo, control, frecuencia, hecho, operador, resultado}] ordenado por fecha y zona.
+    «fecha» es el día (diaria) o el domingo de la semana (semanal); «semana» es el lunes de esa semana.
+    """
+    hoy = hoy_paraguay()
+    por_item = collections.defaultdict(list)                  # item_id -> respuestas con fecha
+    for r in respuestas:
+        d = a_fecha(r.get("fecha"))
+        if d and r.get("item_id") is not None:
+            por_item[r["item_id"]].append((d, r))
+    dias = [desde + timedelta(days=i) for i in range((hasta - desde).days + 1)]
+    filas = []
+
+    def fila(it, fecha, lunes, hechas):
+        ultima = max(hechas, key=lambda x: (x[0], str(x[1].get("ronda_hora") or ""))) if hechas else None
+        return {"fecha": fecha, "semana": lunes, "zona": it.get("zona_nombre") or "(sin zona)", "item_id": it["id"], "codigo": it.get("codigo"),
+                "control": it.get("titulo"), "frecuencia": it.get("frecuencia") or "Diaria", "hecho": bool(hechas),
+                "operador": ultima[1].get("operador") if ultima else None, "resultado": ultima[1].get("resultado") if ultima else None}
+
+    for it in items:
+        if it.get("activo") is False:
+            continue
+        creado = a_fecha(it.get("creado_en")) or desde
+        hechas_it = por_item.get(it["id"], [])
+        if it.get("frecuencia") == "Semanal":
+            for lunes in sorted({lunes_de(d) for d in dias}):
+                fin = lunes + timedelta(days=6)
+                if fin < creado:
+                    continue
+                hechas = [x for x in hechas_it if lunes <= x[0] <= fin]
+                dentro = max(desde, lunes) == lunes and min(hasta, fin) == fin
+                if (not dentro and not hechas) or (lunes <= hoy <= fin and not hechas):
+                    continue
+                filas.append(fila(it, fin if fin <= hasta else hasta, lunes, hechas))
+        else:
+            for d in dias:
+                if d < creado or d > hoy:
+                    continue
+                filas.append(fila(it, d, lunes_de(d), [x for x in hechas_it if x[0] == d]))
+    filas.sort(key=lambda f: (f["fecha"], f["zona"], str(f["codigo"] or ""), str(f["control"] or "")))
+    return filas
+
+
 def serie_lecturas(respuestas, item_id, punto_texto):
     """Valores medidos de un punto a lo largo del tiempo: [(fecha, valor, fuera_rango, operador)]."""
     serie = []
