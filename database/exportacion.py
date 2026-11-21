@@ -8,13 +8,9 @@ con fechas, horas y números reales (no texto). Las hojas se relacionan por iden
 Los números salen de las mismas funciones de cálculo que usa la app (asistencia_logica y productividad_logica),
 así que coinciden con lo que se ve en pantalla.
 """
-import io
 from datetime import date, datetime, timedelta
 
 import openpyxl
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
 
 FORMATOS = {"texto": None, "entero": "0", "decimal": "0.00", "fecha": "dd/mm/yyyy", "hora": "hh:mm", "fechahora": "dd/mm/yyyy hh:mm",
             "porcentaje": "0.0", "logico": None}
@@ -59,87 +55,16 @@ def _r(v, dec=2):
 
 
 # ----------------------------------------------------------------
-# Escritura de hojas
+# Escritura de hojas: todo sale del estándar de marca (excel_marca.py)
 # ----------------------------------------------------------------
-def _hoja_tabla(wb, hoja, tabla, spec, filas):
-    """Una hoja con una tabla de Excel con nombre. spec: [(columna, descripcion, formato)]."""
-    ws = wb.create_sheet(hoja)
-    columnas = [c for c, _, _ in spec]
-    ws.append(columnas)
-    for f in filas:
-        ws.append([f.get(c) for c in columnas])
-    relleno = PatternFill("solid", fgColor="1F3A5F")
-    for i, (c, _, fmt) in enumerate(spec, start=1):
-        celda = ws.cell(row=1, column=i)
-        celda.font, celda.fill, celda.alignment = Font(bold=True, color="FFFFFF"), relleno, Alignment(horizontal="center", vertical="center")
-        formato = FORMATOS.get(fmt)
-        if formato:
-            for fila in range(2, len(filas) + 2):
-                ws.cell(row=fila, column=i).number_format = formato
-        ancho = max([len(str(c))] + [len(str(f.get(c))) for f in filas[:300] if f.get(c) is not None] + [8])
-        ws.column_dimensions[get_column_letter(i)].width = min(ancho + 2, 48)
-    ws.freeze_panes = "A2"
-    if filas:                                                    # una tabla de Excel necesita al menos una fila de datos
-        t = Table(displayName=tabla, ref=f"A1:{get_column_letter(len(columnas))}{len(filas) + 1}")
-        t.tableStyleInfo = TableStyleInfo(name="TableStyleLight9", showRowStripes=True)
-        ws.add_table(t)
-    return ws
+from database import excel_marca as _M
+from database.excel_marca import SPEC_CALENDARIO
 
-
-def _calendario(desde, hasta, feriados):
-    """Una fila por día entre desde y hasta. 'feriados' = {fecha: motivo}."""
-    filas, d = [], desde
-    while d <= hasta:
-        filas.append({"fecha": d, "anio": d.year, "mes": d.month, "nombre_mes": MESES[d.month - 1], "periodo": f"{d.year}-{d.month:02d}",
-                      "trimestre": (d.month - 1) // 3 + 1, "semana_iso": d.isocalendar()[1], "dia_semana_num": d.isoweekday(),
-                      "dia_semana": DIAS[d.weekday()], "es_domingo": d.weekday() == 6, "es_feriado": d in feriados, "motivo_feriado": feriados.get(d)})
-        d += timedelta(days=1)
-    return filas
-
-
-SPEC_CALENDARIO = [
-    ("fecha", "Día (clave para relacionar con las demás tablas)", "fecha"), ("anio", "Año", "entero"), ("mes", "Número de mes (1 a 12)", "entero"),
-    ("nombre_mes", "Nombre del mes", "texto"), ("periodo", "Año y mes (AAAA-MM), útil para ordenar y agrupar", "texto"), ("trimestre", "Trimestre (1 a 4)", "entero"),
-    ("semana_iso", "Número de semana ISO", "entero"), ("dia_semana_num", "Día de la semana: 1 = lunes … 7 = domingo", "entero"),
-    ("dia_semana", "Nombre del día de la semana", "texto"), ("es_domingo", "Verdadero si es domingo", "logico"),
-    ("es_feriado", "Verdadero si es feriado (según los feriados cargados en la app)", "logico"), ("motivo_feriado", "Motivo del feriado", "texto")]
-
-
-def _leeme(wb, titulo, usuario_nombre, rango, tablas, notas):
-    ws = wb.active
-    ws.title = "Leeme"
-    ahora = hoy_paraguay()
-    lineas = [(titulo, True), ("", False),
-              (f"Generado el {ahora:%d/%m/%Y a las %H:%M} por {usuario_nombre or '—'}", False), (f"Datos: {rango}", False), ("", False),
-              ("TABLAS (cada una es una hoja y una tabla de Excel con nombre)", True)]
-    lineas += [(f"  · {n}: {d}", False) for n, d in tablas]
-    lineas += [("", False), ("CÓMO USARLO EN POWER BI", True),
-               ("  1. Power BI Desktop -> Obtener datos -> Libro de Excel -> elegí este archivo.", False),
-               ("  2. Marcá las tablas (no las hojas) que quieras: aparecen con el mismo nombre de la lista de arriba. Podés dejar afuera «Leeme» y «Diccionario».", False),
-               ("  3. Las tablas se relacionan por los identificadores que se indican en el Diccionario (por ejemplo empleado_id o turno_id)", False),
-               ("     y por la fecha con la tabla Calendario.", False),
-               ("  4. Para actualizar: volvé a descargar el archivo desde la app, guardalo con el MISMO nombre y en la MISMA carpeta,", False),
-               ("     y en Power BI tocá «Actualizar».", False), ("", False), ("NOTAS", True)]
-    lineas += [(f"  · {n}", False) for n in notas]
-    for i, (texto, negrita) in enumerate(lineas, start=1):
-        c = ws.cell(row=i, column=1, value=texto)
-        if negrita:
-            c.font = Font(bold=True, size=12)
-    ws.column_dimensions["A"].width = 140
-
-
-def _diccionario(wb, specs):
-    filas = [{"tabla": t, "columna": c, "descripcion": d, "tipo": {"texto": "Texto", "entero": "Número entero", "decimal": "Número decimal", "fecha": "Fecha",
-                                                                  "hora": "Hora", "fechahora": "Fecha y hora", "porcentaje": "Número (porcentaje, 0 a 100)",
-                                                                  "logico": "Verdadero/Falso"}[f]}
-             for t, spec in specs.items() for c, d, f in spec]
-    _hoja_tabla(wb, "Diccionario", "Diccionario", [("tabla", "", "texto"), ("columna", "", "texto"), ("descripcion", "", "texto"), ("tipo", "", "texto")], filas)
-
-
-def _a_bytes(wb):
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    return buffer.getvalue()
+_hoja_tabla = _M.hoja_tabla
+_calendario = _M.calendario
+_diccionario = _M.diccionario
+_a_bytes = _M.a_bytes
+_leeme = _M.portada
 
 
 # ----------------------------------------------------------------
