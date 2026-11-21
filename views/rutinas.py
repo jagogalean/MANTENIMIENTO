@@ -60,7 +60,7 @@ def faltantes(item, puntos, pasos, fotos):
 # Pantalla
 # ----------------------------------------------------------------
 def render_rutinas(usuario):
-    st.title("📋 Rutinas del Operador")
+    st.title("Rutinas del operador")
     st.write("Rondas de control que hacen los operadores escaneando un QR: paso a paso con fotos, lecturas con rango y aviso automático de fallas.")
     rol = (usuario or {}).get("rol")
     if rol not in ("admin", "gerente"):
