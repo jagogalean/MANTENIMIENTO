@@ -1,4 +1,5 @@
 import streamlit as st
+from views import ui
 import pandas as pd
 import base64
 from io import BytesIO
@@ -232,8 +233,8 @@ def generar_excel_reporte(hojas: dict, nombre_empresa="", logo_bytes=None):
 
 
 def render_reportes():
-    st.title("📑 Reportes para Gerencia")
-    st.write("Mirá los datos acá mismo — descargalos solo si necesitás el archivo.")
+    ui.encabezado("Reportes", "Vista previa de los datos y descargas en Excel o PDF para gerencia.")
+    es_admin = (st.session_state.get("usuario_actual") or {}).get("rol") == "admin"
 
     maquinas = st.session_state.get("maquinas", [])
     fallas = st.session_state.get("fallas", [])
@@ -243,26 +244,24 @@ def render_reportes():
     planes = st.session_state.get("planes", [])
 
     kpis = calcular_kpis_industriales(maquinas, fallas, ots)
-
-    st.markdown("##### 🖼️ Membrete de la empresa")
-    st.caption("Se guarda una sola vez en la base de datos — no hace falta volver a subir el logo cada vez.")
-
     config_actual = st.session_state.get("config_empresa", {}) or {}
-    nombre_empresa = st.text_input(
-        "Nombre de la empresa",
-        value=config_actual.get("nombre_empresa", "") or ""
-    )
-    logo_file = st.file_uploader("Logo de la empresa (PNG o JPG) — subilo solo si querés cambiarlo", type=["png", "jpg", "jpeg"])
 
-    if st.button("💾 Guardar Membrete"):
-        if logo_file:
-            logo_base64_nuevo = base64.b64encode(logo_file.read()).decode("utf-8")
-        else:
-            logo_base64_nuevo = config_actual.get("logo_base64", "")
-        guardar_configuracion_empresa(nombre_empresa, logo_base64_nuevo)
-        st.session_state.config_empresa = {"nombre_empresa": nombre_empresa, "logo_base64": logo_base64_nuevo}
-        st.success("✅ Membrete guardado. Ya no hace falta volver a cargarlo.")
-        st.rerun()
+    # El membrete (nombre y logo de la empresa) solo lo cambia el coordinador.
+    if es_admin:
+        with st.expander("Membrete de la empresa (nombre y logo de los informes)"):
+            st.caption("Se guarda una sola vez en la base de datos y lo usan todos los informes.")
+            nombre_empresa = st.text_input("Nombre de la empresa", value=config_actual.get("nombre_empresa", "") or "")
+            logo_file = st.file_uploader("Logo (PNG o JPG). Subilo solo si querés cambiarlo", type=["png", "jpg", "jpeg"])
+            if st.button("Guardar membrete", type="primary"):
+                if logo_file:
+                    logo_base64_nuevo = base64.b64encode(logo_file.read()).decode("utf-8")
+                else:
+                    logo_base64_nuevo = config_actual.get("logo_base64", "")
+                guardar_configuracion_empresa(nombre_empresa, logo_base64_nuevo)
+                st.session_state.config_empresa = {"nombre_empresa": nombre_empresa, "logo_base64": logo_base64_nuevo}
+                st.success("Membrete guardado.")
+                st.rerun()
+    nombre_empresa = config_actual.get("nombre_empresa", "") or ""
 
     logo_bytes = base64.b64decode(config_actual["logo_base64"]) if config_actual.get("logo_base64") else None
 
