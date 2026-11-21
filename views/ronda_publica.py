@@ -7,6 +7,8 @@ import uuid
 import streamlit as st
 
 from database import rutinas_logica as R
+from database import excel_marca as M
+from database import rutinas_excel as RX
 from database import rutinas_publica as DB
 
 ICONO = {"OK": "✅", "NO_OK": "❌", "NA": "➖"}
@@ -236,15 +238,25 @@ def _control(zona, rutinas):
     ev0 = R.evaluar_item(it, puntos, respuestas, "x" * 3, sin_foto_eval)
     hay_problema = bool(ev0["problemas"])
     comentario = st.text_area("¿Qué viste? (obligatorio si hay un problema)" if hay_problema else "Comentario (opcional)", value=previo.get("comentario", ""), key=f"rp_{it['id']}_com")
-    archivo = st.file_uploader("📷 Foto del problema (o de evidencia)", type=["jpg", "jpeg", "png"], key=f"rp_{it['id']}_foto")
+    st.markdown("**📷 Foto** (del problema o de evidencia)")
+    archivo = st.file_uploader("Sacar una foto o elegir una de la galería", key=f"rp_{it['id']}_foto",
+                               help="En el celular te ofrece «Cámara» o «Galería». Se achica sola para que suba rápido.")
+    with st.expander("¿No te abre la cámara? Probá con este botón"):
+        camara = st.camera_input("Sacar la foto desde acá", key=f"rp_{it['id']}_cam", label_visibility="collapsed")
+    origen = archivo if archivo is not None else camara
     foto = foto_prev
-    if archivo is not None:
+    if origen is not None:
         try:
-            foto = R.preparar_foto(archivo.getvalue())[0]
-        except Exception:
-            st.error("No se pudo leer esa foto. Probá con otra.")
-    elif foto_prev:
-        st.caption("📷 Ya hay una foto guardada para este control.")
+            foto = R.preparar_foto(origen.getvalue())[0]
+        except Exception as e:
+            foto = foto_prev
+            st.error(f"No se pudo leer esa foto ({type(e).__name__}). Probá sacándola de nuevo, o elegí otra en formato JPG o PNG.")
+    if foto:
+        st.image(foto, caption=f"✅ Foto lista ({len(foto) // 1024} KB). Se envía con la ronda.", width=240)
+        if origen is None and st.button("🗑️ Quitar esta foto", key=f"rp_quitar_{it['id']}"):
+            s["rp_resp"].setdefault(it["id"], {"puntos": {}, "comentario": comentario})["foto"] = None
+            s["rp_rutas"].pop(it["id"], None)
+            st.rerun()
     ev = R.evaluar_item(it, puntos, respuestas, comentario, bool(foto))
     if ev["problemas"]:
         if it.get("maquina_id"):
@@ -330,6 +342,12 @@ def _enviar(zona, por_id):
         return
     if r.get("estado") == "ok":
         s["rp_final"] = {"fallas": len(r.get("fallas") or []), "controles": len(payload)}
+        try:
+            s["rp_final"]["excel"] = RX.excel_ronda(zona["nombre"], sesion["nombre"], s["rp_uuid"], R.hoy_paraguay(), M.hoy_paraguay().replace(tzinfo=None),
+                                                    payload, por_id, r.get("fallas"))
+            s["rp_final"]["excel_nombre"] = M.nombre_archivo("Ronda_" + zona["nombre"])
+        except Exception:
+            pass                                   # el Excel es un extra: si falla, la ronda ya quedó guardada
         s["rp_fase"] = "fin"
         st.cache_data.clear()
         st.rerun()
@@ -347,6 +365,9 @@ def _fin():
     st.success(f"✅ Ronda enviada ({f['controles']} controles). ¡Gracias, {s['rp_sesion']['nombre']}!")
     if f["fallas"]:
         st.warning(f"Se le avisó a mantenimiento de {f['fallas']} problema(s).")
+    if f.get("excel"):
+        st.download_button("📥 Descargar el Excel de esta ronda", data=f["excel"], file_name=f["excel_nombre"], key="rp_excel_ronda",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     if st.button("Volver a la lista", type="primary", key="rp_volver_lista"):
         _reiniciar(todo=False)
         st.rerun()
