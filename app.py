@@ -1,11 +1,15 @@
+import logging
+from datetime import datetime
+
 import streamlit as st
-# Esta es la ruta corregida sin el ".connection" intermedio
+
 from database.conection import (
     get_maquinas, get_fallas, get_checklists, get_terceros, get_ots, get_repuestos,
     get_tecnicos, get_planes, get_documentos, get_ot_repuestos,
     login_usuario, logout_usuario, get_usuario_by_id, get_configuracion_empresa,
     get_actividades, get_plan_ejecuciones
 )
+from views import ui
 from views.dashboard import render_dashboard
 from views.maquinas import render_maquinas
 from views.fallas import render_fallas
@@ -20,95 +24,64 @@ from views.asistente import render_asistente
 from views.usuarios import render_usuarios
 from views.mis_ots import render_mis_ots
 from views.calendario import render_calendario
-from views.reportar_falla import render_reportar_falla  # NUEVO: vista del rol Operador
-from views.presupuesto import render_presupuesto  # NUEVO: presupuesto vs. gasto real
-from views.vista_publica import render_vista_publica  # NUEVO: ficha + reporte público (QR, sin login)
-from views.solicitudes_falla import render_solicitudes_falla  # NUEVO: bandeja de reportes QR (admin)
-from views.solicitudes_compra import render_solicitudes_compra  # NUEVO: solicitud de compra a Compras
-from views.comparativo_cotizaciones import render_comparativo_cotizaciones  # NUEVO: comparar cotizaciones + informe técnico
-from views.programacion import render_programacion  # NUEVO: programar fechas de preventivos y ver la carga
-from views.asistencia import render_asistencia  # NUEVO: asistencia y horas extras del personal
-from views.productividad import render_productividad  # NUEVO: productividad (carga por logística + indicadores)
+from views.reportar_falla import render_reportar_falla
+from views.presupuesto import render_presupuesto
+from views.vista_publica import render_vista_publica
+from views.solicitudes_falla import render_solicitudes_falla, get_solicitudes_falla
+from views.solicitudes_compra import render_solicitudes_compra
+from views.comparativo_cotizaciones import render_comparativo_cotizaciones
+from views.programacion import render_programacion
+from views.asistencia import render_asistencia
+from views.productividad import render_productividad
+
+# Módulos opcionales: si falta algún archivo, la app sigue funcionando y solo
+# esa pantalla avisa qué falta.
 try:
-    from views.asistencia_consulta import render_asistencia_consulta  # NUEVO: asistencia de solo lectura (sin salarios)
+    from views.asistencia_consulta import render_asistencia_consulta
 except ImportError as _error_consulta:
-    # Si el archivo views/asistencia_consulta.py no está (o quedó con otro nombre o en otra carpeta), la app SIGUE funcionando:
-    # solo esa opción del menú avisa qué falta, en vez de tirar abajo toda la aplicación.
     _motivo_consulta = str(_error_consulta)
 
     def render_asistencia_consulta(usuario):
-        st.title("🕒 Asistencia (consulta)")
-        st.error("Falta el archivo «asistencia_consulta.py» dentro de la carpeta «views» de tu repositorio, o está con otro nombre. "
-                 "Tiene que llamarse exactamente views/asistencia_consulta.py (todo en minúscula, con guion bajo).")
+        st.title("Asistencia (consulta)")
+        st.error("Falta el archivo views/asistencia_consulta.py en el repositorio.")
         st.code(_motivo_consulta)
 
-# NUEVO: rutinas del operador (rondas con QR). Si falta algún archivo, la app SIGUE funcionando: solo esa parte avisa qué falta.
 try:
     from views.rutinas import render_rutinas
 except ImportError as _error_rutinas:
     _motivo_rutinas = str(_error_rutinas)
 
     def render_rutinas(usuario):
-        st.title("📋 Rutinas del Operador")
-        st.error("Faltan archivos de las rutinas en tu repositorio (views/rutinas.py y los archivos database/rutinas_*.py). Detalle:")
+        st.title("Rutinas del operador")
+        st.error("Faltan archivos de las rutinas (views/rutinas.py y database/rutinas_*.py).")
         st.code(_motivo_rutinas)
+
 try:
     from views.ronda_publica import render_ronda_publica
 except ImportError as _error_ronda:
     _motivo_ronda = str(_error_ronda)
 
     def render_ronda_publica(zona_id):
-        st.title("📋 Ronda")
+        st.title("Ronda")
         st.error("Esta página todavía no está instalada. Avisale al administrador.")
         st.code(_motivo_ronda)
-from datetime import datetime
 
-# Configuración de página
+
+logging.basicConfig(level=logging.INFO)
+
 st.set_page_config(
-    page_title="CMMS Industrial MVP",
+    page_title="Mantenimiento · Vitopel",
     page_icon="⚙️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
-
-# Estética Industrial Oscura Personalizada
-st.markdown("""
-    <style>
-        /* Estilos base fondo y contenedores */
-        .stApp { background-color: #12171B; color: #E5E9EC; }
-        [data-testid="stSidebar"] { background-color: #0E1216; border-right: 1px solid #22282E; }
-        
-        /* Contenedores tipo Panel del MVP */
-        .industrial-panel {
-            background-color: #1B2127;
-            border: 1px solid #2A323A;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 12px;
-        }
-        
-        /* CORRECCIÓN: Forzar texto claro y legible en el menú de la barra lateral */
-        [data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
-            color: #E5E9EC !important;
-            font-size: 14px !important;
-            }
-        
-        /* Modificación de Inputs globales de Streamlit para acoplar al tema */
-        .stTextInput>div>div>input, .stSelectbox>div>div>div, .stTextArea>div>div>textarea {
-            background-color: #12171B !important;
-            border: 1px solid #2A323A !important;
-            color: #E5E9EC !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
+ui.aplicar_estilos()
 
 # ============================================================
-# NUEVO: DESVÍO PÚBLICO (QR sin login) — va ANTES del login a propósito.
-# Si la URL trae ?equipo=X (por ejemplo, alguien escaneó el QR pegado en
-# una máquina), se muestra la ficha pública + formulario de reporte, sin
-# pasar por la pantalla de inicio de sesión. Si la persona toca el botón
-# "Acceso Administrativo", la bandera forzar_login_admin hace que se
-# ignore el parámetro y se muestre el login normal.
+# PÁGINAS PÚBLICAS (QR, sin iniciar sesión) — van antes del login a propósito.
+# ?equipo=X  -> ficha pública de la máquina + formulario de aviso
+# ?ronda=X   -> ronda del operador (se identifica con su PIN)
+# El botón "Acceso del personal" activa forzar_login_admin para ver el login.
 # ============================================================
 equipo_qr_id = st.query_params.get("equipo")
 if equipo_qr_id and not st.session_state.get("forzar_login_admin"):
@@ -119,240 +92,273 @@ if equipo_qr_id and not st.session_state.get("forzar_login_admin"):
     render_vista_publica(equipo_id_normalizado)
     st.stop()
 
-# NUEVO: ronda del operador (QR de una zona, sin iniciar sesión en la app; el operador se identifica con su PIN).
 ronda_qr_id = st.query_params.get("ronda")
 if ronda_qr_id and not st.session_state.get("forzar_login_admin"):
     render_ronda_publica(ronda_qr_id)
     st.stop()
 
 # ============================================================
-# LOGIN (Supabase Auth) — nada de lo de abajo corre sin sesión
+# INICIO DE SESIÓN (Supabase Auth)
 # ============================================================
 if "usuario_actual" not in st.session_state:
     st.session_state.usuario_actual = None
 
 if not st.session_state.usuario_actual:
-    st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 20px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO</div>", unsafe_allow_html=True)
-    st.subheader("Iniciar Sesión")
+    _, centro, _ = st.columns([1, 1.1, 1])
+    with centro:
+        st.write("")
+        st.write("")
+        st.title("Mantenimiento")
+        st.caption("Vitopel · Planta Paraguay")
+        with st.form("form_login"):
+            email = st.text_input("Email", placeholder="nombre@vitopelparaguay.com")
+            password = st.text_input("Contraseña", type="password")
+            ingresar = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
 
-    with st.form("form_login"):
-        email = st.text_input("Email")
-        password = st.text_input("Contraseña", type="password")
-        submit = st.form_submit_button("Ingresar")
-
-        if submit:
-            try:
-                resultado = login_usuario(email, password)
-                user_id = resultado.user.id
-                perfil = get_usuario_by_id(user_id)
-                if not perfil:
-                    st.error("Tu cuenta existe pero todavía no tiene un rol asignado. Pedile al administrador que te cargue en '🔐 Usuarios'.")
+        if ingresar:
+            if not email or not password:
+                st.error("Completá el email y la contraseña.")
+            else:
+                try:
+                    with st.spinner("Verificando..."):
+                        resultado = login_usuario(email.strip(), password)
+                        perfil = get_usuario_by_id(resultado.user.id)
+                except Exception as e:
+                    ui.error_amigable("No se pudo iniciar sesión. Revisá el email y la contraseña.", e)
                 else:
-                    st.session_state.usuario_actual = perfil
-                    st.rerun()
-            except Exception as e:
-                st.error(f"❌ No se pudo iniciar sesión. Verificá tu email y contraseña. Detalle: {e}")
-
+                    if not perfil:
+                        st.warning("Tu cuenta existe pero todavía no tiene un rol asignado. "
+                                   "Pedile al coordinador que te cargue en Configuración → Usuarios.")
+                    else:
+                        st.session_state.usuario_actual = perfil
+                        st.rerun()
     st.stop()
 
 usuario = st.session_state.usuario_actual
 rol = usuario.get("rol", "tecnico")
 
-# Inicializar Estados de Sesión en Memoria (Sincronizados con Supabase)
-if "maquinas" not in st.session_state:
-    st.session_state.maquinas = get_maquinas()
-if "fallas" not in st.session_state:
-    st.session_state.fallas = get_fallas()
-if "checklists" not in st.session_state:
-    st.session_state.checklists = get_checklists()
-if "terceros" not in st.session_state:
-    st.session_state.terceros = get_terceros()
-if "ots" not in st.session_state:
-    st.session_state.ots = get_ots()
-if "repuestos" not in st.session_state:
-    st.session_state.repuestos = get_repuestos()
-if "tecnicos" not in st.session_state:
-    st.session_state.tecnicos = get_tecnicos()
-if "planes" not in st.session_state:
-    st.session_state.planes = get_planes()
-if "documentos" not in st.session_state:
-    st.session_state.documentos = get_documentos()
-if "ot_repuestos" not in st.session_state:
-    st.session_state.ot_repuestos = get_ot_repuestos()
+# ============================================================
+# DATOS EN MEMORIA DE LA SESIÓN
+# (se mantiene igual que antes; se optimiza en la tanda 3)
+# ============================================================
+_CARGAS = {
+    "maquinas": get_maquinas,
+    "fallas": get_fallas,
+    "checklists": get_checklists,
+    "terceros": get_terceros,
+    "ots": get_ots,
+    "repuestos": get_repuestos,
+    "tecnicos": get_tecnicos,
+    "planes": get_planes,
+    "documentos": get_documentos,
+    "ot_repuestos": get_ot_repuestos,
+    "plan_actividades": get_actividades,
+    "plan_ejecuciones": get_plan_ejecuciones,
+}
+for _clave, _funcion in _CARGAS.items():
+    if _clave not in st.session_state:
+        st.session_state[_clave] = _funcion()
 if "config_empresa" not in st.session_state:
     st.session_state.config_empresa = get_configuracion_empresa() or {}
-if "plan_actividades" not in st.session_state:
-    st.session_state.plan_actividades = get_actividades()
-if "plan_ejecuciones" not in st.session_state:
-    st.session_state.plan_ejecuciones = get_plan_ejecuciones()
 
-# Helpers de cálculo de alertas para Badges de Navegación
-def days_until(date_str):
-    if not date_str: return None
-    try:
-        diff = datetime.strptime(date_str, "%Y-%m-%d").date() - datetime.date(datetime.now())
-        return diff.days
-    except:
-        return None
 
-fallas_abiertas = len([f for f in st.session_state.fallas if f.get("estado") != "Cerrada"])
-venc_proximos = len([t for t in st.session_state.terceros if days_until(t.get("proximoVencimiento")) is not None and days_until(t.get("proximoVencimiento")) <= 30])
-criticos_stock = len([r for r in st.session_state.repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)])
-
-def _dias_plan(fecha_str):
+# ============================================================
+# CONTADORES DEL MENÚ
+# ============================================================
+def _dias_hasta(fecha_str):
     try:
         return (datetime.strptime(fecha_str, "%Y-%m-%d").date() - datetime.now().date()).days
     except (TypeError, ValueError):
         return None
 
-planes_vencidos = len([p for p in st.session_state.planes if _dias_plan(p.get("proxima_ejecucion")) is not None and _dias_plan(p.get("proxima_ejecucion")) <= 7])
 
-# NUEVO: contador de reportes públicos (QR) pendientes de revisar, solo para admin
+fallas_abiertas = len([f for f in st.session_state.fallas if f.get("estado") != "Cerrada"])
+venc_terceros = len([t for t in st.session_state.terceros
+                     if _dias_hasta(t.get("proximoVencimiento")) is not None
+                     and _dias_hasta(t.get("proximoVencimiento")) <= 30])
+stock_critico = len([r for r in st.session_state.repuestos
+                     if (r.get("stock_actual") or 0) <= (r.get("stock_minimo") or 0)])
+preventivos_proximos = len([p for p in st.session_state.planes
+                            if _dias_hasta(p.get("proxima_ejecucion")) is not None
+                            and _dias_hasta(p.get("proxima_ejecucion")) <= 7])
+backlog_sin_asignar = len([o for o in st.session_state.ots
+                           if o.get("tecnico_id") is None and o.get("estado") != "Completada"])
+ots_bloqueadas = len([o for o in st.session_state.ots if o.get("estado") == "Bloqueada"])
+
+avisos_qr_pendientes = 0
 if rol == "admin":
-    from views.solicitudes_falla import get_solicitudes_falla
-    st.session_state.solicitudes_qr_pendientes = len([
-        s for s in get_solicitudes_falla() if s.get("estado") == "Pendiente"
-    ])
+    try:
+        avisos_qr_pendientes = len([s for s in get_solicitudes_falla() if s.get("estado") == "Pendiente"])
+    except Exception as e:
+        logging.getLogger("cmms").warning("No se pudo contar los avisos QR: %s", e)
+st.session_state.solicitudes_qr_pendientes = avisos_qr_pendientes
 
 mis_ots_pendientes = 0
 if rol == "tecnico" and usuario.get("tecnico_id"):
-    mis_ots_pendientes = len([
-        o for o in st.session_state.ots
-        if o.get("tecnico_id") == usuario.get("tecnico_id") and o.get("estado") != "Completada"
-    ])
+    mis_ots_pendientes = len([o for o in st.session_state.ots
+                              if o.get("tecnico_id") == usuario.get("tecnico_id")
+                              and o.get("estado") != "Completada"]) + backlog_sin_asignar
 
-backlog_sin_asignar = len([
-    o for o in st.session_state.ots
-    if o.get("tecnico_id") is None and o.get("estado") != "Completada"
-])
-ots_bloqueadas = len([o for o in st.session_state.ots if o.get("estado") == "Bloqueada"])
-
-if rol == "tecnico":
-    mis_ots_pendientes += backlog_sin_asignar
-
-# --- LECTURA DE QR: si la URL trae ?maquina_id=X&vista=checklist, saltar directo ---
-query_params = st.query_params
-if "maquina_id" in query_params:
-    st.session_state["qr_maquina_id"] = query_params["maquina_id"]
-    if query_params.get("vista") == "checklist":
-        st.session_state["forzar_vista"] = "Recepción / Entrega"
 
 # ============================================================
-# SIDEBAR: identidad del usuario + menú según su rol
+# PANTALLAS
+# Cada pantalla es una función sin argumentos para st.navigation.
 # ============================================================
+def pagina_inicio():
+    ui.encabezado("Inicio", f"{datetime.now().strftime('%d/%m/%Y')} · Lo que necesita atención primero")
+    render_asistente(mostrar_titulo=False)
+    st.divider()
+    st.subheader("Indicadores")
+    render_dashboard(mostrar_titulo=False)
+
+
+def pagina_agenda_tecnico():
+    ui.encabezado("Agenda del día", "Pendientes de toda la planta, ordenados por urgencia.")
+    render_asistente(mostrar_titulo=False)
+
+
+def pagina_ots():
+    ui.encabezado("Órdenes de trabajo", "Creá, actualizá y cerrá OTs. Los avisos que llegan por QR están en su propia vista.")
+    opciones = ["Órdenes", ui.con_contador("Avisos QR", avisos_qr_pendientes)]
+    vista = st.segmented_control("Vista", opciones, default=opciones[0], key="ots_vista",
+                                 label_visibility="collapsed")
+    if vista == opciones[1]:
+        render_solicitudes_falla(mostrar_titulo=False)
+    else:
+        render_ots(usuario, mostrar_titulo=False)
+
+
+def pagina_preventivo():
+    ui.encabezado("Preventivo", "Qué toca hacer, cuándo, y cómo queda repartida la carga.")
+    opciones = ["Planes", "Programación del año", "Calendario"]
+    vista = st.segmented_control("Vista", opciones, default=opciones[0], key="prev_vista",
+                                 label_visibility="collapsed")
+    if vista == "Programación del año":
+        render_programacion(usuario, mostrar_titulo=False)
+    elif vista == "Calendario":
+        render_calendario(mostrar_titulo=False)
+    else:
+        render_planes(mostrar_titulo=False)
+
+
+def pagina_rutinas():
+    render_rutinas(usuario)
+
+
+def pagina_mis_ots():
+    render_mis_ots(usuario)
+
+
+def pagina_reportar_falla():
+    render_reportar_falla(usuario)
+
+
+def pagina_compras():
+    render_solicitudes_compra(usuario)
+
+
+def pagina_comparativo():
+    render_comparativo_cotizaciones(usuario)
+
+
+def pagina_presupuesto():
+    render_presupuesto(usuario)
+
+
+def pagina_productividad():
+    render_productividad(usuario)
+
+
+def pagina_asistencia():
+    render_asistencia(usuario)
+
+
+def pagina_asistencia_consulta():
+    render_asistencia_consulta(usuario)
+
+
+# Si alguien escaneó el QR de Recepción/Entrega (?maquina_id=X&vista=checklist),
+# esa pantalla se abre directamente.
+desde_qr_checklist = False
+if "maquina_id" in st.query_params:
+    st.session_state["qr_maquina_id"] = st.query_params["maquina_id"]
+    desde_qr_checklist = st.query_params.get("vista") == "checklist"
+
+
+def P(funcion, titulo, icono, ruta, default=False):
+    return st.Page(funcion, title=titulo, icon=icono, url_path=ruta, default=default)
+
+
+p_inicio = P(pagina_inicio, "Inicio", ":material/home:", "inicio", default=not desde_qr_checklist)
+p_ots = P(pagina_ots, ui.con_contador("Órdenes de trabajo", backlog_sin_asignar + ots_bloqueadas + avisos_qr_pendientes),
+          ":material/build:", "ordenes")
+p_preventivo = P(pagina_preventivo, ui.con_contador("Preventivo", preventivos_proximos), ":material/event_repeat:", "preventivo")
+p_rutinas = P(pagina_rutinas, "Rutinas del operador", ":material/fact_check:", "rutinas")
+p_maquinas = P(render_maquinas, "Máquinas", ":material/precision_manufacturing:", "maquinas")
+p_fallas = P(render_fallas, ui.con_contador("Fallas y RCA", fallas_abiertas), ":material/troubleshoot:", "fallas")
+p_recepcion = P(render_checklists, "Recepción y entrega", ":material/swap_horiz:", "recepcion",
+                default=desde_qr_checklist and rol in ("admin", "tecnico"))
+p_repuestos = P(render_repuestos, ui.con_contador("Repuestos", stock_critico), ":material/inventory_2:", "repuestos")
+p_compras = P(pagina_compras, "Solicitudes de compra", ":material/shopping_cart:", "compras")
+p_comparativo = P(pagina_comparativo, "Comparativo de cotizaciones", ":material/balance:", "cotizaciones")
+p_terceros = P(render_terceros, ui.con_contador("Terceros", venc_terceros), ":material/local_shipping:", "terceros")
+p_presupuesto = P(pagina_presupuesto, "Presupuesto", ":material/account_balance_wallet:", "presupuesto")
+p_reportes = P(render_reportes, "Reportes", ":material/description:", "reportes")
+p_productividad = P(pagina_productividad, "Productividad", ":material/factory:", "productividad")
+p_asistencia = P(pagina_asistencia, "Asistencia y horas extras", ":material/schedule:", "asistencia")
+p_tecnicos = P(render_tecnicos, "Técnicos", ":material/engineering:", "tecnicos")
+p_usuarios = P(render_usuarios, "Usuarios", ":material/manage_accounts:", "usuarios")
+
+if rol == "admin":
+    paginas = {
+        "": [p_inicio],
+        "Trabajo": [p_ots, p_preventivo, p_rutinas],
+        "Activos": [p_maquinas, p_fallas, p_recepcion],
+        "Almacén y compras": [p_repuestos, p_compras, p_comparativo, p_terceros],
+        "Gestión": [p_presupuesto, p_reportes, p_productividad, p_asistencia],
+        "Configuración": [p_tecnicos, p_usuarios],
+    }
+elif rol == "gerente":
+    paginas = {
+        "": [p_inicio],
+        "Gestión": [p_presupuesto, p_reportes, p_productividad],
+        "Trabajo": [p_rutinas],
+    }
+elif rol == "tecnico":
+    paginas = [
+        P(pagina_mis_ots, ui.con_contador("Mis OTs", mis_ots_pendientes), ":material/assignment_ind:", "mis-ots",
+          default=not desde_qr_checklist),
+        p_recepcion,
+        P(pagina_agenda_tecnico, "Agenda del día", ":material/today:", "agenda"),
+    ]
+elif rol == "operador":
+    paginas = [P(pagina_reportar_falla, "Reportar falla", ":material/campaign:", "reportar", default=True)]
+elif rol == "logistica":
+    paginas = [P(pagina_productividad, "Productividad", ":material/factory:", "productividad", default=True)]
+elif rol == "asistencia":
+    paginas = [P(pagina_asistencia, "Asistencia y horas extras", ":material/schedule:", "asistencia", default=True)]
+elif rol == "consulta_asistencia":
+    paginas = [P(pagina_asistencia_consulta, "Asistencia (consulta)", ":material/schedule:", "asistencia-consulta",
+                 default=True)]
+else:
+    paginas = [P(pagina_mis_ots, "Mis OTs", ":material/assignment_ind:", "mis-ots", default=True)]
+
+navegacion = st.navigation(paginas)
+
+# ============================================================
+# BARRA LATERAL: usuario y cierre de sesión (debajo del menú)
+# ============================================================
+NOMBRE_ROL = {
+    "admin": "Coordinador", "gerente": "Gerencia", "tecnico": "Técnico", "operador": "Operador",
+    "logistica": "Logística", "asistencia": "Asistencia", "consulta_asistencia": "Consulta de asistencia",
+}
 with st.sidebar:
-    st.markdown("<div style='color: #38BDF8; font-family: monospace; font-size: 14px; font-weight: bold; letter-spacing: 2px;'>⚙️ MANTENIMIENTO by Javier Galeano</div>", unsafe_allow_html=True)
-    st.markdown("<div style='color: #5A6570; font-family: monospace; font-size: 10px; margin-bottom: 4px;'>MVP · v0.2 (Python)</div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='color: #E5E9EC; font-size: 13px; margin-bottom: 16px;'>👤 {usuario.get('nombre')} · <span style='color:#38BDF8;'>{rol.upper()}</span></div>", unsafe_allow_html=True)
-
-    if st.button("🚪 Cerrar Sesión"):
+    st.divider()
+    st.markdown(f"**{usuario.get('nombre') or 'Usuario'}**")
+    st.caption(f"{NOMBRE_ROL.get(rol, rol)} · Mantenimiento Vitopel")
+    if st.button("Cerrar sesión", icon=":material/logout:", use_container_width=True):
         logout_usuario()
-        st.session_state.usuario_actual = None
+        st.session_state.clear()
         st.rerun()
 
-    st.markdown("---")
-
-    # Textos con badges para el menú
-    lbl_fallas = f"🚨 Fallas / RCA ({fallas_abiertas})" if fallas_abiertas > 0 else "📋 Fallas / RCA"
-    lbl_terceros = f"🚚 Terceros ({venc_proximos})" if venc_proximos > 0 else "📦 Terceros"
-    lbl_repuestos = f"🚨 Repuestos / Stock ({criticos_stock})" if criticos_stock > 0 else "🔩 Repuestos / Stock"
-    lbl_planes = f"🚨 Plan Preventivo ({planes_vencidos})" if planes_vencidos > 0 else "🗓️ Plan Preventivo"
-    lbl_mis_ots = f"🚨 Mis OTs ({mis_ots_pendientes})" if mis_ots_pendientes > 0 else "👷 Mis OTs"
-
-    alertas_ot = backlog_sin_asignar + ots_bloqueadas
-    lbl_ots = f"🚨 Órdenes de Trabajo ({alertas_ot})" if alertas_ot > 0 else "🛠️ Órdenes de Trabajo"
-
-    # NUEVO: badge de reportes públicos (QR) pendientes de revisar
-    solicitudes_qr_pendientes = st.session_state.get("solicitudes_qr_pendientes", 0)
-    lbl_solicitudes_qr = f"🚨 Reportes QR ({solicitudes_qr_pendientes})" if solicitudes_qr_pendientes > 0 else "📨 Reportes QR"
-
-    # Menú distinto según el rol del usuario logueado
-    if rol == "admin":
-        opciones_menu = ["🧭 Asistente del Día", "Panel General", "Máquinas", lbl_ots, lbl_repuestos,
-                          lbl_fallas, lbl_solicitudes_qr, "🛒 Solicitud de Compra", "⚖️ Comparativo de Cotizaciones", "Recepción / Entrega", lbl_terceros, lbl_planes, "📆 Programación de Preventivos",
-                          "📅 Calendario Preventivo", "📋 Rutinas del Operador", "👷 Técnicos", "🕒 Asistencia y Horas Extras", "🏭 Productividad", "💰 Presupuesto", "📑 Reportes", "🔐 Usuarios"]
-    elif rol == "gerente":
-        opciones_menu = ["Panel General", "🏭 Productividad", "📋 Rutinas del Operador", "💰 Presupuesto", "📑 Reportes"]
-    elif rol == "asistencia":
-        # NUEVO: rol de Asistencia — acceso COMPLETO al módulo de asistencia (cargar, liquidación con montos, empleados, parámetros,
-        # importar y exportar), pero a nada más de la app.
-        opciones_menu = ["🕒 Asistencia y Horas Extras"]
-    elif rol == "consulta_asistencia":
-        # NUEVO: rol de solo lectura — ve la asistencia y las horas del personal, sin salarios ni montos. Nada más.
-        opciones_menu = ["🕒 Asistencia (consulta)"]
-    elif rol == "logistica":
-        # NUEVO: rol Logística — carga la producción por turno y ve los registros e indicadores. Nada más.
-        opciones_menu = ["🏭 Productividad"]
-    elif rol == "operador":
-        # NUEVO: rol Operador/Reportador — solo puede reportar fallas,
-        # que caen automáticamente al backlog compartido de mantenimiento.
-        opciones_menu = ["🚨 Reportar Falla"]
-    else:  # tecnico
-        opciones_menu = ["🧭 Asistente del Día", lbl_mis_ots, "Recepción / Entrega"]
-
-    indice_default = 0
-    forzar_vista = st.session_state.get("forzar_vista")
-    if forzar_vista:
-        for i, op in enumerate(opciones_menu):
-            if forzar_vista in op or op in forzar_vista:
-                indice_default = i
-                break
-
-    opcion = st.radio(
-        "Menú de Navegación",
-        opciones_menu,
-        index=indice_default,
-        label_visibility="collapsed"
-    )
-
-# ============================================================
-# Enrutamiento de Módulos (Views) — respeta el rol
-# ============================================================
-if "Asistente" in opcion:
-    render_asistente()
-elif "Mis OTs" in opcion:
-    render_mis_ots(usuario)
-elif "Reportar Falla" in opcion:
-    render_reportar_falla(usuario)  # NUEVO: vista exclusiva del rol Operador
-elif "Presupuesto" in opcion:
-    render_presupuesto(usuario)  # NUEVO: presupuesto vs. gasto real
-elif "Reportes QR" in opcion:
-    render_solicitudes_falla()  # NUEVO: bandeja de reportes públicos (QR)
-elif "Solicitud de Compra" in opcion:
-    render_solicitudes_compra(usuario)  # NUEVO: solicitud de compra a Compras
-elif "Comparativo de Cotizaciones" in opcion:
-    render_comparativo_cotizaciones(usuario)  # NUEVO: comparar cotizaciones + informe técnico
-elif "Panel General" in opcion:
-    render_dashboard()
-elif "Máquinas" in opcion:
-    render_maquinas()
-elif "Órdenes de Trabajo" in opcion:
-    render_ots(usuario)  # MODIFICADO: ahora recibe 'usuario' para el bloque de Administrador
-elif "Repuestos" in opcion:
-    render_repuestos()
-elif "Fallas" in opcion:
-    render_fallas()
-elif "Recepción" in opcion:
-    render_checklists()
-elif "Terceros" in opcion:
-    render_terceros()
-elif "Programación de Preventivos" in opcion:
-    render_programacion(usuario)  # NUEVO: programar fechas de preventivos y ver la carga
-elif "Plan Preventivo" in opcion:
-    render_planes()
-elif "Rutinas del Operador" in opcion:
-    render_rutinas(usuario)  # NUEVO: rondas de control del operador con QR
-elif "Calendario Preventivo" in opcion:
-    render_calendario()
-elif "Asistencia (consulta)" in opcion:
-    render_asistencia_consulta(usuario)  # NUEVO: asistencia de solo lectura (sin salarios)
-elif "Asistencia y Horas Extras" in opcion:
-    render_asistencia(usuario)  # NUEVO: asistencia y horas extras del personal
-elif "Productividad" in opcion:
-    render_productividad(usuario)  # NUEVO: productividad (carga por logística + indicadores)
-elif "Técnicos" in opcion:
-    render_tecnicos()
-elif "Reportes" in opcion:
-    render_reportes()
-elif "Usuarios" in opcion:
-    render_usuarios()
+navegacion.run()
