@@ -1,260 +1,224 @@
-import streamlit as st
+"""
+Mis OTs: la pantalla del técnico, pensada para el celular.
+
+Tres vistas: Mías (lo que tengo que hacer), Libres (backlog para tomar) y
+Hechas. Cada tarjeta tiene UNA acción principal grande (Iniciar, Completar o
+Reanudar) y el resto en botones secundarios.
+
+Reglas (las mismas que en Órdenes de trabajo, en database/ots_servicio.py):
+- Sin permiso de trabajo emitido no se puede iniciar ni completar (H-11).
+- Al completar una OT preventiva, el plan registra la ejecución y avanza
+  su fecha (antes eso solo pasaba desde la pantalla del administrador, H-07).
+"""
 from datetime import datetime
+
+import streamlit as st
+
 from database.conection import (
-    insert_ot, update_ot,
-    get_ots_cached, get_repuestos_cached,
-    consumir_repuesto_seguro, tomar_ot_backlog_seguro
+    get_ots_cached, get_repuestos_cached, consumir_repuesto_seguro, tomar_ot_backlog_seguro, get_ot_repuestos,
 )
+from database import ots_servicio as S
+from views import ui
 
-ESTADOS_OT = ["Pendiente", "En Ejecucion", "Bloqueada", "Completada"]
-
-
-def generar_codigo_ot(ots):
-    """Genera el siguiente código consecutivo del año en curso. Ej: OT-2026-0007"""
-    year = datetime.now().year
-    prefijo = f"OT-{year}-"
-    consecutivos = []
-    for o in ots:
-        cod = o.get("codigo", "") or ""
-        if cod.startswith(prefijo):
-            try:
-                consecutivos.append(int(cod.replace(prefijo, "")))
-            except ValueError:
-                pass
-    siguiente = max(consecutivos) + 1 if consecutivos else 1
-    return f"{prefijo}{siguiente:04d}"
+ORDEN_ESTADO = {"En Ejecucion": 0, "Pendiente": 1, "Bloqueada": 2}
 
 
-def _dias_abierta(fecha_inicio_iso):
+def _antiguedad(ot, ahora):
+    d = ui.a_datetime(ot.get("fecha_inicio"))
+    if not d:
+        return ""
+    horas = (ahora - d).total_seconds() / 3600
+    return f"hace {horas:.0f} h" if horas < 48 else f"hace {horas / 24:.0f} días"
+
+
+def _aplicar(ot, nuevo_estado, motivo=None, extra=None):
     try:
-        fecha = datetime.fromisoformat(fecha_inicio_iso.replace("Z", "+00:00"))
-        return (datetime.now(fecha.tzinfo) - fecha).days
-    except (TypeError, ValueError, AttributeError):
-        return None
+        ok, msg = S.cambiar_estado(ot, nuevo_estado, motivo_bloqueo=motivo, extra=extra)
+    except Exception as e:
+        ui.error_amigable("No se pudo guardar el cambio. Revisá la conexión y probá de nuevo.", e)
+        return
+    if ok:
+        st.session_state["misots_mensaje"] = msg
+        st.rerun()
+    else:
+        st.error(msg)
 
 
-def _refrescar_ots():
-    """NUEVO: limpia la caché corta de OTs y refresca también session_state,
-    para que este usuario vea el cambio al instante Y el resto de los usuarios
-    lo vea apenas venza la caché (máximo 15 segundos)."""
-    get_ots_cached.clear()
-    st.session_state.ots = get_ots_cached()
+def _tarjeta_mia(ot, mapa_maq, repuestos, ahora):
+    oid = ot.get("id")
+    estado = ot.get("estado")
+    maquina = mapa_maq.get(ot.get("maquina_id"), {})
+    with st.container(border=True):
+        c1, c2 = st.columns([3, 2], vertical_alignment="center")
+        c1.caption(f"{ot.get('codigo')} · {ot.get('tipo_mantenimiento') or ''}")
+        c2.markdown(ui.etiqueta_estado(S.NOMBRE_ESTADO.get(estado, estado)))
+        st.markdown(f"**{ui.texto_md(maquina.get('nombre', 'Máquina'))}**")
+        st.markdown(ui.texto_md(S.descripcion_sin_marca(ot)) or "_(sin descripción)_")
+        st.caption(_antiguedad(ot, ahora))
+        if S.es_parada(ot):
+            st.markdown(":red-badge[Máquina parada]")
+        if S.falta_permiso(ot):
+            st.error("Falta el permiso de trabajo. No iniciar hasta que el coordinador lo emita.",
+                     icon=":material/block:")
+        if estado == "Bloqueada":
+            st.warning(f"Bloqueada: {ui.texto_md(ot.get('motivo_bloqueo') or 'sin motivo')}")
+
+        # Acción principal
+        if estado == "Pendiente":
+            if st.button("Iniciar", key=f"mis_iniciar_{oid}", type="primary", use_container_width=True,
+                         disabled=S.falta_permiso(ot)):
+                _aplicar(ot, "En Ejecucion")
+        elif estado == "En Ejecucion":
+            if st.button("Completar", key=f"mis_completar_{oid}", type="primary", use_container_width=True,
+                         disabled=S.falta_permiso(ot)):
+                _aplicar(ot, "Completada")
+        elif estado == "Bloqueada":
+            if st.button("Reanudar", key=f"mis_reanudar_{oid}", type="primary", use_container_width=True,
+                         disabled=S.falta_permiso(ot)):
+                _aplicar(ot, "En Ejecucion")
+
+        # Acciones secundarias
+        b1, b2, b3 = st.columns(3)
+        with b1.popover("+ Repuesto", use_container_width=True):
+            if not repuestos:
+                st.caption("No hay repuestos cargados.")
+            else:
+                mapa_rep = {r["id"]: r for r in repuestos}
+                rep_id = st.selectbox("Repuesto", list(mapa_rep.keys()), index=None, placeholder="Buscar",
+                                      format_func=lambda i: f"{mapa_rep[i].get('codigo_interno') or ''} {mapa_rep[i]['nombre']} "
+                                                            f"(stock {mapa_rep[i].get('stock_actual') or 0})".strip(),
+                                      key=f"mis_rep_{oid}")
+                cant = st.number_input("Cantidad", min_value=1, step=1, key=f"mis_cant_{oid}")
+                if st.button("Registrar", key=f"mis_rep_btn_{oid}", type="primary", disabled=rep_id is None):
+                    try:
+                        consumir_repuesto_seguro(oid, rep_id, cant)
+                    except ValueError:
+                        st.error("No hay stock suficiente en este momento.")
+                    except Exception as e:
+                        ui.error_amigable("No se pudo registrar el repuesto.", e)
+                    else:
+                        S.refrescar_repuestos()
+                        st.session_state.ot_repuestos = get_ot_repuestos()
+                        st.session_state["misots_mensaje"] = f"Se descontaron {cant} de {mapa_rep[rep_id]['nombre']}."
+                        st.rerun()
+        if estado != "Bloqueada":
+            with b2.popover("Bloquear", use_container_width=True):
+                motivo = st.text_input("¿Por qué no se puede seguir?", key=f"mis_motivo_{oid}",
+                                       placeholder="Ej.: falta el rodamiento 6204")
+                if st.button("Marcar bloqueada", key=f"mis_bloq_{oid}", type="primary"):
+                    _aplicar(ot, "Bloqueada", motivo=motivo)
+        if estado in ("En Ejecucion", "Bloqueada"):
+            with b3.popover("Cerrar con fecha", use_container_width=True):
+                st.caption("Si terminaste antes y lo cargás ahora.")
+                f = st.date_input("Fecha de cierre", value=ahora.date(), format="DD/MM/YYYY", key=f"mis_ff_{oid}")
+                h = st.time_input("Hora", value=ahora.time().replace(second=0, microsecond=0), key=f"mis_hf_{oid}")
+                if st.button("Completar", key=f"mis_cerrar_fecha_{oid}", type="primary", disabled=S.falta_permiso(ot)):
+                    _aplicar(ot, "Completada", extra={"fecha_fin": datetime.combine(f, h).isoformat()})
 
 
-def _refrescar_repuestos():
-    """Igual que _refrescar_ots pero para el stock de repuestos."""
-    get_repuestos_cached.clear()
-    st.session_state.repuestos = get_repuestos_cached()
-
-
-def _render_form_estado_y_cierre(o, repuestos, key_prefix):
-    """Formulario compartido para actualizar estado / bloquear / cerrar y
-    registrar repuestos, usado tanto en 'Mis OTs' como en el Backlog."""
-    nuevo_estado = st.selectbox(
-        "Estado de la OT", ESTADOS_OT,
-        index=ESTADOS_OT.index(o.get("estado")) if o.get("estado") in ESTADOS_OT else 0,
-        key=f"{key_prefix}_estado_{o.get('id')}"
-    )
-
-    motivo_bloqueo = o.get("motivo_bloqueo", "") or ""
-    if nuevo_estado == "Bloqueada":
-        motivo_bloqueo = st.text_area(
-            "🚧 ¿Por qué no se puede cerrar? *",
-            value=motivo_bloqueo,
-            placeholder="Ej: Falta el rodamiento SKF 6204, esperando repuesto del proveedor.",
-            key=f"{key_prefix}_motivo_{o.get('id')}"
-        )
-
-    fecha_fin_dt = None
-    if nuevo_estado == "Completada":
+@st.dialog("Avisar una falla")
+def _dialogo_aviso(usuario):
+    maquinas = st.session_state.get("maquinas", [])
+    mapa = {m["id"]: m for m in maquinas}
+    ahora = ui.ahora()
+    maquina_id = st.selectbox("Máquina *", list(mapa.keys()), index=None, placeholder="Escribí para buscar",
+                              format_func=lambda i: mapa[i]["nombre"])
+    descripcion = st.text_area("¿Qué pasa? *", placeholder="Ej.: pierde aceite el reductor")
+    parada = st.toggle("La máquina está parada")
+    me_la_asigno = st.toggle("Me la asigno y la trabajo yo", value=True)
+    with st.expander("Más datos (opcional)"):
         c1, c2 = st.columns(2)
-        fecha_fin_sel = c1.date_input("Fecha de cierre", value=datetime.now().date(), key=f"{key_prefix}_fecha_fin_{o.get('id')}")
-        hora_fin_sel = c2.time_input("Hora de fin", value=datetime.now().time(), key=f"{key_prefix}_hora_fin_{o.get('id')}")
-        fecha_fin_dt = datetime.combine(fecha_fin_sel, hora_fin_sel)
-
-    with st.expander(f"🔩 Registrar repuestos usados en {o.get('codigo')}"):
-        if repuestos:
-            dict_repuestos = {r["nombre"]: r for r in repuestos}
-            c1, c2 = st.columns(2)
-            r_sel = c1.selectbox("Repuesto", list(dict_repuestos.keys()), key=f"{key_prefix}_rep_sel_{o.get('id')}")
-            cant_sel = c2.number_input("Cantidad", min_value=1, step=1, key=f"{key_prefix}_rep_cant_{o.get('id')}")
-            if st.button("➕ Registrar consumo", key=f"{key_prefix}_rep_btn_{o.get('id')}"):
-                rep = dict_repuestos[r_sel]
-                # NUEVO: el descuento de stock + registro de consumo ahora se hace
-                # con una función RPC transaccional en Supabase (consumir_repuesto),
-                # que valida el stock y descuenta en un solo paso atómico. Esto evita
-                # que dos técnicos consuman el mismo repuesto al mismo tiempo y el
-                # stock quede en negativo.
-                try:
-                    consumir_repuesto_seguro(o.get("id"), rep["id"], cant_sel)
-                    _refrescar_repuestos()
-                    st.success("✅ Consumo registrado y descontado del stock.")
-                    st.rerun()
-                except ValueError:
-                    st.error(f"❌ Stock insuficiente para '{rep['nombre']}' (alguien más lo consumió justo antes). Actualizá y volvé a intentar.")
-        else:
-            st.caption("No hay repuestos cargados en el inventario.")
-
-    if st.button("💾 Guardar cambios de estado", key=f"{key_prefix}_save_{o.get('id')}"):
-        if nuevo_estado == "Bloqueada" and not motivo_bloqueo.strip():
-            st.error("❌ Contá por qué no se puede cerrar antes de guardar.")
-        else:
-            patch = {"estado": nuevo_estado, "motivo_bloqueo": motivo_bloqueo if nuevo_estado == "Bloqueada" else None}
-            if nuevo_estado == "Completada":
-                patch["fecha_fin"] = fecha_fin_dt.isoformat()
-            update_ot(o.get("id"), patch)
-            _refrescar_ots()
-            st.success(f"✅ {o.get('codigo')} actualizada a '{nuevo_estado}'.")
-            st.rerun()
+        fecha = c1.date_input("Fecha de inicio", value=ahora.date(), format="DD/MM/YYYY")
+        hora = c2.time_input("Hora", value=ahora.time().replace(second=0, microsecond=0))
+        horas_paro = st.number_input("Horas de paro (si ya se sabe)", min_value=0.0, step=0.5)
+    if st.button("Crear OT", type="primary", use_container_width=True):
+        if maquina_id is None or not (descripcion or "").strip():
+            st.error("Elegí la máquina y describí el problema.")
+            return
+        try:
+            codigo, _ = S.crear_ot({
+                "maquina_id": maquina_id,
+                "tipo_mantenimiento": "Correctivo",
+                "descripcion": S.con_marca_parada(descripcion, parada),
+                "estado": "En Ejecucion" if me_la_asigno else "Pendiente",
+                "fecha_inicio": datetime.combine(fecha, hora).isoformat(),
+                "horas_paro": horas_paro,
+                "tecnico_id": usuario.get("tecnico_id") if me_la_asigno else None,
+                "origen": "tecnico",
+            })
+        except Exception as e:
+            ui.error_amigable("No se pudo crear la OT.", e)
+            return
+        st.session_state["misots_mensaje"] = (f"OT {codigo} creada y asignada a vos." if me_la_asigno
+                                              else f"OT {codigo} creada en el backlog compartido.")
+        st.rerun()
 
 
 def render_mis_ots(usuario):
-    st.title("👷 Mis Órdenes de Trabajo")
-
     tecnico_id = usuario.get("tecnico_id")
+    ui.encabezado("Mis OTs", usuario.get("nombre") or "")
     if not tecnico_id:
-        st.warning("Tu usuario no está vinculado a ningún técnico todavía. Pedile al administrador que te vincule en '🔐 Usuarios'.")
+        st.warning("Tu usuario no está vinculado a un técnico. Pedile al coordinador que lo vincule en Configuración → Usuarios.")
         return
 
-    maquinas = st.session_state.get("maquinas", [])
-    map_maquina = {m["id"]: m["nombre"] for m in maquinas}
-    # NUEVO: repuestos y OTs se leen desde funciones con caché corta (15s) en vez
-    # de depender solo de la foto que se cargó en session_state al iniciar sesión.
-    # Así, si otro técnico toma una OT del backlog o consume un repuesto, este
-    # usuario lo ve reflejado casi en tiempo real sin tener que cerrar sesión.
+    mensaje = st.session_state.pop("misots_mensaje", None)
+    if mensaje:
+        st.toast(mensaje, icon=":material/check_circle:")
+        st.success(mensaje)
+
+    ahora = ui.ahora()
+    mapa_maq = {m["id"]: m for m in st.session_state.get("maquinas", [])}
     repuestos = get_repuestos_cached()
-    todas_las_ots = get_ots_cached()
+    todas = get_ots_cached()
+    mias = sorted([o for o in todas if o.get("tecnico_id") == tecnico_id and o.get("estado") != "Completada"],
+                  key=lambda o: (not S.es_parada(o), ORDEN_ESTADO.get(o.get("estado"), 9), o.get("id") or 0))
+    libres = sorted([o for o in todas if o.get("tecnico_id") is None and o.get("estado") != "Completada"],
+                    key=lambda o: (not S.es_parada(o), o.get("id") or 0))
+    hechas = sorted([o for o in todas if o.get("tecnico_id") == tecnico_id and o.get("estado") == "Completada"],
+                    key=lambda o: str(o.get("fecha_fin") or ""), reverse=True)
 
-    # --- REPORTAR UNA FALLA / CREAR OT CORRECTIVA ---
-    with st.expander("🆕 Reportar Falla / Crear OT Correctiva"):
-        if not maquinas:
-            st.warning("Todavía no hay máquinas registradas.")
-        else:
-            with st.form("form_correctivo_tecnico", clear_on_submit=True):
-                dict_maquinas = {m["nombre"]: m["id"] for m in maquinas}
-                maquina_sel = st.selectbox("Máquina", options=list(dict_maquinas.keys()))
-                descripcion = st.text_area("Descripción del problema / trabajo realizado")
+    opciones = [f"Mías · {len(mias)}", f"Libres · {len(libres)}", "Hechas"]
+    if st.session_state.get("misots_vista") not in opciones:
+        st.session_state["misots_vista"] = opciones[0]
+    vista = st.segmented_control("Vista", opciones, key="misots_vista", label_visibility="collapsed") or opciones[0]
 
-                c1, c2 = st.columns(2)
-                fecha_hoy = c1.date_input("Fecha", value=datetime.now().date())
-                hora_inicio = c2.time_input("Hora de inicio", value=datetime.now().time())
+    if st.button("+ Avisar una falla nueva", use_container_width=True):
+        _dialogo_aviso(usuario)
 
-                horas_paro = st.number_input("Horas de Paro (si la máquina se detuvo)", min_value=0.0, step=0.5)
+    if vista == opciones[0]:
+        if not mias:
+            st.success("No tenés OTs pendientes. Mirá en «Libres» si hay algo para tomar.")
+        for o in mias:
+            _tarjeta_mia(o, mapa_maq, repuestos, ahora)
 
-                asignacion = st.radio(
-                    "¿Qué hacés con esta OT?",
-                    ["Me la asigno y la trabajo yo", "Dejarla en el backlog compartido (para que cualquiera la tome)"],
-                    key="asignacion_nueva_ot"
-                )
-
-                submit = st.form_submit_button("Crear OT Correctiva")
-                if submit:
-                    if not descripcion.strip():
-                        st.error("❌ Describí el problema antes de guardar.")
-                    else:
-                        codigo_generado = generar_codigo_ot(todas_las_ots)
-                        fecha_inicio_dt = datetime.combine(fecha_hoy, hora_inicio)
-                        me_la_asigno = asignacion.startswith("Me la asigno")
-                        nueva_ot = {
-                            "codigo": codigo_generado,
-                            "maquina_id": dict_maquinas[maquina_sel],
-                            "tipo_mantenimiento": "Correctivo",
-                            "descripcion": descripcion,
-                            "estado": "En Ejecucion" if me_la_asigno else "Pendiente",
-                            "fecha_inicio": fecha_inicio_dt.isoformat(),
-                            "fecha_fin": None,
-                            "horas_paro": horas_paro,
-                            "tecnico_id": tecnico_id if me_la_asigno else None,
-                            "costo_mano_obra": 0,
-                            "requiere_permiso_trabajo": False,
-                            "permiso_trabajo_emitido": False
-                        }
-                        insert_ot(nueva_ot)
-                        _refrescar_ots()
-                        if me_la_asigno:
-                            st.success(f"✅ OT {codigo_generado} creada y asignada a vos.")
-                        else:
-                            st.success(f"✅ OT {codigo_generado} creada en el backlog compartido.")
-                        st.rerun()
-
-    st.markdown("---")
-
-    # --- BACKLOG COMPARTIDO: OTs sin asignar, cualquiera las puede tomar ---
-    backlog = [o for o in todas_las_ots if o.get("tecnico_id") is None and o.get("estado") != "Completada"]
-    backlog_con_dias = []
-    for o in backlog:
-        dias = _dias_abierta(o.get("fecha_inicio"))
-        backlog_con_dias.append((dias if dias is not None else 0, o))
-    backlog_con_dias.sort(key=lambda x: x[0], reverse=True)
-
-    urgentes_backlog = len([d for d, _ in backlog_con_dias if d >= 2])
-    titulo_backlog = f"🗂️ Backlog Compartido — sin asignar ({len(backlog)})"
-    if urgentes_backlog:
-        titulo_backlog = f"🚨 {titulo_backlog} · {urgentes_backlog} con 2+ días sin moverse"
-
-    with st.expander(titulo_backlog, expanded=urgentes_backlog > 0):
-        if not backlog_con_dias:
-            st.caption("No hay OTs sin asignar en este momento. 🎉")
-        else:
-            for dias, o in backlog_con_dias:
-                color = "#EF4444" if dias >= 2 else "#F59E0B" if dias >= 1 else "#38BDF8"
-                st.markdown(f"""
-                <div class='industrial-panel' style='border-color:{color};'>
-                    <strong>{o.get('codigo')}</strong> — {map_maquina.get(o.get('maquina_id'), 'Desconocida')}<br>
-                    <span>{o.get('tipo_mantenimiento')} · {o.get('descripcion')}</span><br>
-                    <span style='color:{color}; font-weight:bold;'>⏳ Cargada hace {dias} día(s) y sin tomar</span>
-                </div>
-                """, unsafe_allow_html=True)
-                if st.button("🙋 Tomar esta OT", key=f"tomar_{o.get('id')}"):
-                    # NUEVO: "tomar OT" ahora usa una función RPC transaccional
-                    # (tomar_ot_backlog) que solo asigna la OT si en ese instante
-                    # sigue sin dueño. Esto evita que dos técnicos se asignen la
-                    # misma OT si tocan el botón casi al mismo tiempo.
+    elif vista == opciones[1]:
+        if not libres:
+            st.success("No hay OTs sin asignar.")
+        for o in libres:
+            with st.container(border=True):
+                st.caption(f"{o.get('codigo')} · {o.get('tipo_mantenimiento') or ''} · {_antiguedad(o, ahora)}")
+                st.markdown(f"**{ui.texto_md(mapa_maq.get(o.get('maquina_id'), {}).get('nombre', 'Máquina'))}**"
+                            + ("  :red-badge[Máquina parada]" if S.es_parada(o) else ""))
+                st.markdown(ui.texto_md(S.descripcion_sin_marca(o)) or "_(sin descripción)_")
+                if st.button("Tomar esta OT", key=f"tomar_{o.get('id')}", type="primary", use_container_width=True):
                     try:
                         tomar_ot_backlog_seguro(o.get("id"), tecnico_id)
-                        _refrescar_ots()
-                        st.success(f"✅ Te asignaste la OT {o.get('codigo')}.")
                     except ValueError:
-                        st.warning("⚠️ Justo ahora otro técnico tomó esta OT antes que vos.")
-                    st.rerun()
-                st.markdown("---")
+                        st.warning("Otro técnico la tomó justo antes que vos.")
+                    except Exception as e:
+                        ui.error_amigable("No se pudo tomar la OT.", e)
+                    else:
+                        S.refrescar_ots()
+                        st.session_state["misots_mensaje"] = f"Te asignaste {o.get('codigo')}."
+                        st.rerun()
 
-    # --- MIS OTs ASIGNADAS ---
-    mis_ots = [o for o in todas_las_ots if o.get("tecnico_id") == tecnico_id]
-
-    if not mis_ots:
-        st.info("No tenés Órdenes de Trabajo asignadas por el momento.")
-        return
-
-    pendientes = [o for o in mis_ots if o.get("estado") != "Completada"]
-    completadas = [o for o in mis_ots if o.get("estado") == "Completada"]
-
-    st.markdown(f"##### 🔧 {len(pendientes)} pendiente(s) · ✅ {len(completadas)} completada(s)")
-    st.markdown("---")
-
-    if not pendientes:
-        st.success("✅ No tenés OTs pendientes. ¡Buen trabajo!")
-
-    for o in pendientes:
-        dias = _dias_abierta(o.get("fecha_inicio"))
-        st.markdown(f"""
-        <div class='industrial-panel'>
-            <strong>{o.get('codigo')}</strong> — {map_maquina.get(o.get('maquina_id'), 'Desconocida')}<br>
-            <span>{o.get('tipo_mantenimiento')} · {o.get('descripcion')}</span>
-            {f"<br><span style='color:#F59E0B;'>⏳ Abierta hace {dias} día(s)</span>" if dias is not None and dias >= 2 else ""}
-        </div>
-        """, unsafe_allow_html=True)
-
-        if o.get("estado") == "Bloqueada":
-            st.error(f"🚧 Bloqueada: {o.get('motivo_bloqueo') or 'sin motivo especificado'}")
-
-        if o.get("requiere_permiso_trabajo") and not o.get("permiso_trabajo_emitido"):
-            st.warning("⚠️ Esta tarea requiere Permiso de Trabajo y todavía no fue emitido. Confirmá con tu coordinador antes de empezar.")
-
-        _render_form_estado_y_cierre(o, repuestos, key_prefix="mis")
-        st.markdown("---")
-
-    if completadas:
-        with st.expander(f"✅ Ver mis OTs completadas ({len(completadas)})"):
-            for o in completadas:
-                st.markdown(f"- **{o.get('codigo')}** — {map_maquina.get(o.get('maquina_id'), 'Desconocida')} · {o.get('descripcion')}")
+    else:
+        if not hechas:
+            st.caption("Todavía no completaste OTs.")
+        else:
+            st.dataframe([{
+                "Código": o.get("codigo"),
+                "Máquina": mapa_maq.get(o.get("maquina_id"), {}).get("nombre", "—"),
+                "Cerrada": ui.fecha_corta(o.get("fecha_fin")),
+                "Trabajo": S.descripcion_sin_marca(o)[:60],
+            } for o in hechas[:30]], hide_index=True, use_container_width=True)
