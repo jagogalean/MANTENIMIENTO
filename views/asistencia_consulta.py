@@ -85,7 +85,7 @@ def _excel(registro, resumen):
 
 
 def render_asistencia_consulta(usuario):
-    st.title("🕒 Asistencia (consulta)")
+    st.title("Asistencia (consulta)")
     if (usuario or {}).get("rol") not in ROLES_CONSULTA:
         st.warning("No tenés acceso a esta pantalla.")
         return
