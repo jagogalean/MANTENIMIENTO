@@ -159,7 +159,7 @@ def _refrescar_terceros():
 # Pantalla
 # ----------------------------------------------------------------
 def render_terceros():
-    st.title("🚚 Terceros y Proveedores")
+    st.title("Terceros")
     st.write("Directorio de proveedores, los trabajos que hacen para vos (preventivos y correctivos), sus facturas, pagos y archivos.")
 
     usuario = st.session_state.get("usuario_actual") or {}
@@ -812,13 +812,13 @@ def _tab_servicios(terceros, mapa_maquinas, trabajos):
     planes = [p for p in st.session_state.get("planes", []) if p.get("tipo") == "Tercerizado"]
     if not planes:
         st.info("No hay planes preventivos tercerizados. Cuando los cargues, acá asignás qué proveedor hace cada uno. "
-                "Las fechas se manejan en «📆 Programación de Preventivos».")
+                "Las fechas se manejan en «Preventivo → Programación del año».")
         return
     activos = [t for t in terceros if t.get("activo") is not False]
     opciones = opciones_terceros(activos)
     etiqueta_por_id = {tid: e for e, tid in opciones}
     st.caption("Estos son los planes marcados como «Tercerizado». Elegí qué proveedor hace cada uno; la fecha de cada servicio "
-               "se maneja en «📆 Programación de Preventivos» (no hace falta cargarla dos veces).")
+               "se maneja en «Preventivo → Programación del año» (no hace falta cargarla dos veces).")
     conteo = {}
     for t in trabajos:
         if t.get("plan_id"):
