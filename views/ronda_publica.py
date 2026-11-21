@@ -43,7 +43,7 @@ def render_ronda_publica(zona_id):
     if not zona:
         st.error("Este QR no corresponde a una zona activa. Avisale al administrador.")
         return
-    st.title(f"📋 Ronda — {zona['nombre']}")
+    st.title(f"Ronda — {zona['nombre']}")
     if not rutinas:
         st.info("Esta zona todavía no tiene controles cargados.")
         return
