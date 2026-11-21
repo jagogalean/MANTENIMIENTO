@@ -1,0 +1,29 @@
+# Configuración de Streamlit para el CMMS MANTENIMIENTO.
+# Va en la carpeta .streamlit/ en la RAÍZ del repositorio (al lado de app.py).
+# La protección XSRF queda activada (valor por defecto de Streamlit).
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#0E5A75"
+backgroundColor = "#F4F6F8"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#17212B"
+linkColor = "#0E5A75"
+borderColor = "#DCE2E7"
+showWidgetBorder = true
+baseRadius = "6px"
+dataframeHeaderBackgroundColor = "#F8FAFB"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap, sans-serif"
+
+[theme.sidebar]
+backgroundColor = "#15212B"
+secondaryBackgroundColor = "#22323F"
+textColor = "#E6EBEF"
+borderColor = "#2B3B48"
+primaryColor = "#7FC4DA"
