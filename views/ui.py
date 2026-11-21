@@ -163,3 +163,27 @@ def fecha_larga(d):
 
 def nombre_mes(d):
     return MESES[d.month - 1]
+
+
+# ------------------------------------------------------------------
+# Texto seguro y confirmaciones
+# ------------------------------------------------------------------
+_MD_ESPECIALES = set("\\`*_{}[]()#+-.!|<>~:$")
+
+
+def texto_md(valor):
+    """Escapa texto escrito por usuarios para mostrarlo con st.markdown sin que
+    se interprete como enlace, formato o etiqueta (evita inyección de HTML/markdown)."""
+    return "".join("\\" + c if c in _MD_ESPECIALES else c for c in str(valor if valor is not None else ""))
+
+
+def boton_confirmar(etiqueta, key, mensaje, texto_confirmar="Sí, confirmar", tipo="secondary",
+                    use_container_width=False, icono=None):
+    """Botón para acciones irreversibles: abre una ventanita con la pregunta y
+    solo devuelve True cuando la persona confirma."""
+    opciones = {"use_container_width": use_container_width}
+    if icono:
+        opciones["icon"] = icono
+    with st.popover(etiqueta, **opciones):
+        st.markdown(mensaje)
+        return st.button(texto_confirmar, key=key, type="primary" if tipo == "primary" else "secondary")
