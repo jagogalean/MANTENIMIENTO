@@ -10,7 +10,7 @@ from database.conection import (
     get_actividades, get_plan_ejecuciones
 )
 from views import ui
-from views.dashboard import render_dashboard
+from views.inicio import render_inicio
 from views.maquinas import render_maquinas
 from views.fallas import render_fallas
 from views.checklists import render_checklists
@@ -185,12 +185,14 @@ backlog_sin_asignar = len([o for o in st.session_state.ots
                            if o.get("tecnico_id") is None and o.get("estado") != "Completada"])
 ots_bloqueadas = len([o for o in st.session_state.ots if o.get("estado") == "Bloqueada"])
 
-avisos_qr_pendientes = 0
+avisos_pendientes_lista = None
 if rol == "admin":
     try:
-        avisos_qr_pendientes = len([s for s in get_solicitudes_falla() if s.get("estado") == "Pendiente"])
+        avisos_pendientes_lista = [s for s in get_solicitudes_falla() if s.get("estado") == "Pendiente"]
     except Exception as e:
-        logging.getLogger("cmms").warning("No se pudo contar los avisos QR: %s", e)
+        logging.getLogger("cmms").warning("No se pudo leer los avisos QR: %s", e)
+        avisos_pendientes_lista = []
+avisos_qr_pendientes = len(avisos_pendientes_lista or [])
 st.session_state.solicitudes_qr_pendientes = avisos_qr_pendientes
 
 mis_ots_pendientes = 0
@@ -205,11 +207,7 @@ if rol == "tecnico" and usuario.get("tecnico_id"):
 # Cada pantalla es una función sin argumentos para st.navigation.
 # ============================================================
 def pagina_inicio():
-    ui.encabezado("Inicio", f"{datetime.now().strftime('%d/%m/%Y')} · Lo que necesita atención primero")
-    render_asistente(mostrar_titulo=False)
-    st.divider()
-    st.subheader("Indicadores")
-    render_dashboard(mostrar_titulo=False)
+    render_inicio(usuario, MAPA_PAGINAS, avisos_pendientes_lista)
 
 
 def pagina_agenda_tecnico():
@@ -220,7 +218,11 @@ def pagina_agenda_tecnico():
 def pagina_ots():
     ui.encabezado("Órdenes de trabajo", "Creá, actualizá y cerrá OTs. Los avisos que llegan por QR están en su propia vista.")
     opciones = ["Órdenes", ui.con_contador("Avisos QR", avisos_qr_pendientes)]
-    vista = st.segmented_control("Vista", opciones, default=opciones[0], key="ots_vista",
+    if st.session_state.pop("ots_vista_pedida", None) == "avisos":
+        st.session_state["ots_vista"] = opciones[1]
+    elif st.session_state.get("ots_vista") not in opciones:
+        st.session_state["ots_vista"] = opciones[0]
+    vista = st.segmented_control("Vista", opciones, key="ots_vista",
                                  label_visibility="collapsed")
     if vista == opciones[1]:
         render_solicitudes_falla(mostrar_titulo=False)
@@ -343,6 +345,8 @@ elif rol == "consulta_asistencia":
 else:
     paginas = [P(pagina_mis_ots, "Mis OTs", ":material/assignment_ind:", "mis-ots", default=True)]
 
+_lista_paginas = [p for grupo in paginas.values() for p in grupo] if isinstance(paginas, dict) else paginas
+MAPA_PAGINAS = {p.url_path: p for p in _lista_paginas}
 navegacion = st.navigation(paginas)
 
 # ============================================================
