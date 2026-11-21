@@ -1,7 +1,7 @@
 """
-Excel de las rondas del operador (estándar de marca + Power BI). Se usa en dos lugares:
-  · Al terminar una ronda: el operador (o quien la hizo) descarga el Excel de ESA ronda.
-  · En «Rutinas del Operador» (administrador): el Excel de todas las rondas de un período.
+Excel de las rondas del operador (estándar de marca + Power BI). Lo genera el coordinador cuando quiere, desde
+«Rutinas del Operador» → Cumplimiento: el Excel de un período, con la tabla «Cumplimiento» (¿se hizo o no?, control por control).
+(excel_ronda, el Excel de una sola ronda, queda disponible pero ya no se ofrece al operador al terminar.)
 Todas las filas salen de los mismos datos que se guardan en rut_ejecuciones / rut_respuestas.
 """
 
@@ -29,6 +29,15 @@ SPEC_LECTURAS = [
     ("punto", "Punto de control (lo que se miró o midió)", "texto"), ("tipo", "numero = valor medido; si no, OK/No OK", "texto"), ("unidad", "Unidad de la medida", "texto"),
     ("valor", "Valor medido", "decimal"), ("resultado", "OK, No OK o No aplica", "texto"), ("fuera_de_rango", "Verdadero si el valor se pasó del rango", "logico"),
     ("rango", "Rango permitido", "texto")]
+
+SPEC_CUMPLIMIENTO = [
+    ("fecha", "Día que tocaba (diaria) o domingo de la semana (semanal)", "fecha"), ("semana", "Lunes de la semana", "fecha"),
+    ("zona", "Zona de la planta", "texto"), ("item_id", "Identificador de la rutina (clave)", "entero"), ("codigo", "Código de la rutina", "texto"),
+    ("control", "Nombre del control", "texto"), ("frecuencia", "Diaria o Semanal", "texto"),
+    ("se_hizo", "«Sí» si se hizo en su día/semana, «No» si quedó sin hacer", "texto"), ("hecho", "Verdadero si se hizo (1 = hecho, para sumar en Power BI)", "logico"),
+    ("operador", "Quién lo hizo (vacío si no se hizo)", "texto"), ("resultado", "OK, No OK o No aplica (vacío si no se hizo)", "texto")]
+
+TABLA_CUMPLIMIENTO = ("Cumplimiento", "Cumplimiento", "Una fila por cada control que TOCABA en el período: si se hizo o no, quién y con qué resultado.")
 
 TABLAS = [("Rondas", "Rondas", "Una fila por ronda enviada: quién, dónde, cuándo y cuántos controles."),
           ("Controles", "Controles", "Una fila por control respondido (con su resultado, comentario, falla y foto)."),
@@ -82,19 +91,31 @@ def tablas_desde_filas(ejec, filas):
 
 
 def _libro(titulo, usuario, rango, datos, desde, hasta, notas):
-    specs = {"Rondas": SPEC_RONDAS, "Controles": SPEC_CONTROLES, "Lecturas": SPEC_LECTURAS}
-    return M.libro(titulo, usuario, rango, TABLAS, specs, datos, notas=notas, con_calendario=(desde, hasta))
+    specs = {"Rondas": SPEC_RONDAS, "Controles": SPEC_CONTROLES, "Lecturas": SPEC_LECTURAS, "Cumplimiento": SPEC_CUMPLIMIENTO}
+    tablas = ([TABLA_CUMPLIMIENTO] if "Cumplimiento" in datos else []) + TABLAS
+    return M.libro(titulo, usuario, rango, tablas, specs, datos, notas=notas, con_calendario=(desde, hasta))
 
 
-NOTAS = ["Las fotos no van dentro del Excel: «foto_ruta» indica dónde está cada una (se ve en la app, en Rutinas del Operador → Cumplimiento).",
+def tabla_cumplimiento(detalle):
+    """detalle: salida de rutinas_logica.detalle_cumplimiento()."""
+    return [{"fecha": f["fecha"], "semana": f["semana"], "zona": f["zona"], "item_id": f["item_id"], "codigo": f["codigo"], "control": f["control"],
+             "frecuencia": f["frecuencia"], "se_hizo": "Sí" if f["hecho"] else "No", "hecho": f["hecho"], "operador": f["operador"],
+             "resultado": ETQ_RESULTADO.get(f["resultado"], f["resultado"])} for f in detalle]
+
+
+NOTAS = ["«Cumplimiento» responde «¿se hizo o no?»: % cumplimiento = filas con hecho = Verdadero ÷ total de filas.",
+         "Las fotos no van dentro del Excel: «foto_ruta» indica dónde está cada una (se ve en la app, en Rutinas del Operador → Cumplimiento).",
          "«Lecturas» tiene una fila por cada punto de control; los valores medidos están en «valor» con su «rango» y «fuera_de_rango».",
          "Clave entre tablas: ronda_id (Rondas → Controles → Lecturas)."]
 
 
-def excel_periodo(ejec, filas, desde, hasta, usuario=None):
-    """Todas las rondas entre dos fechas (administrador)."""
+def excel_periodo(ejec, filas, desde, hasta, usuario=None, detalle=None):
+    """Todas las rondas entre dos fechas (administrador). Con «detalle» agrega la tabla Cumplimiento (lo hecho y lo que faltó)."""
+    datos = tablas_desde_filas(ejec, filas)
+    if detalle is not None:
+        datos["Cumplimiento"] = tabla_cumplimiento(detalle)
     return _libro("RONDAS DEL OPERADOR — datos para Power BI", usuario, f"rondas del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}",
-                  tablas_desde_filas(ejec, filas), desde, hasta, NOTAS)
+                  datos, desde, hasta, NOTAS)
 
 
 def excel_ronda(zona_nombre, operador, ronda_uuid, fecha, hora, payload, items_por_id, fallas=None):
