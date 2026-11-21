@@ -473,7 +473,92 @@ def filas_respuestas(ejec, resp):
              "ronda_hora": por_id[r["ejecucion_id"]].get("creado_en")} for r in resp if r["ejecucion_id"] in por_id]
 
 
+def _hora(valor):
+    h = M.hora_local(valor)
+    return f"{h:%H:%M}" if h else ""
+
+
+def _estado_de_hoy(d, items):
+    """Arriba de todo, sin importar el período: ¿qué se hizo hoy (y esta semana, las semanales) y qué falta?, zona por zona."""
+    hoy = R.hoy_paraguay()
+    try:
+        ejec, resp = _cargar_resultados(R.lunes_de(hoy).isoformat(), hoy.isoformat(), _v())
+    except Exception as e:
+        _mostrar_error("No se pudieron leer las rondas de hoy.", e)
+        return
+    hechos = [{"item_id": r.get("item_id"), "fecha": r["fecha"], "operador": r["operador"], "resultado": r["resultado"], "hora": r.get("ronda_hora")}
+              for r in filas_respuestas(ejec, resp)]
+    activos = [i for i in items if i.get("activo") is not False]
+    if not activos:
+        st.info("Todavía no hay rutinas activas. Cargalas en la pestaña «Rutinas».")
+        return
+    estados = R.estado_items(activos, hechos, hoy)
+    hechos_n = sum(1 for e in estados if e["estado"] == "hecho")
+    st.subheader(f"Hoy, {hoy:%d/%m}: {hechos_n} de {len(estados)} controles hechos")
+    st.caption("Diarias: lo de hoy. Semanales: lo de esta semana (lunes a domingo).")
+    st.progress(hechos_n / len(estados) if estados else 0)
+    zonas_orden = [z["nombre"] for z in d["zonas"]]
+    por_zona = {}
+    for e in estados:
+        por_zona.setdefault(e["item"].get("zona_nombre") or "(sin zona)", []).append(e)
+    nombres = sorted(por_zona, key=lambda z: zonas_orden.index(z) if z in zonas_orden else 999)
+    cols = st.columns(min(3, len(nombres)) or 1)
+    for n, zona in enumerate(nombres):
+        lista = por_zona[zona]
+        hz = sum(1 for e in lista if e["estado"] == "hecho")
+        color = "green" if hz == len(lista) else ("red" if hz == 0 else "orange")
+        with cols[n % len(cols)], st.container(border=True):
+            st.markdown(f"**{zona}** :{color}-badge[{hz} de {len(lista)}]")
+            for e in lista:
+                it = e["item"]
+                nombre = f"{it.get('codigo') or ''} {it.get('titulo') or ''}".strip()
+                sem = " · semanal" if it.get("frecuencia") == "Semanal" else ""
+                if e["estado"] == "hecho":
+                    marca = "❌ con problema" if e["resultado"] == "NO_OK" else "✅"
+                    cuando = f"{e['fecha_hecho']:%d/%m} " if it.get("frecuencia") == "Semanal" and e.get("fecha_hecho") else ""
+                    st.markdown(f"{marca} {nombre}  \n:gray[{e['hecho_por'] or ''} · {cuando}{_hora(e['hora'])}{sem}]")
+                else:
+                    st.markdown(f":orange[⏳ {nombre}]  \n:gray[No se hizo todavía{sem}]")
+
+
+def _grilla(detalle, desde, hasta):
+    """Tabla rutina × día con ✅ (se hizo), ❌ (no se hizo) y vacío (no tocaba)."""
+    diarias = [f for f in detalle if f["frecuencia"] != "Semanal"]
+    semanales = [f for f in detalle if f["frecuencia"] == "Semanal"]
+    if (hasta - desde).days > 31:
+        st.info("La grilla muestra hasta 31 días. Para períodos más largos usá «Lo que faltó» o el Excel.")
+        return
+    if diarias:
+        st.markdown("**Rutinas diarias**")
+        dias = sorted({f["fecha"] for f in diarias})
+        filas = {}
+        for f in diarias:
+            clave = (f["zona"], f"{f['codigo'] or ''} {f['control'] or ''}".strip())
+            filas.setdefault(clave, {"Zona": clave[0], "Rutina": clave[1]})[f"{f['fecha']:%d/%m}"] = "✅" if f["hecho"] else "❌"
+        df = pd.DataFrame(list(filas.values()), columns=["Zona", "Rutina"] + [f"{x:%d/%m}" for x in dias]).fillna("")
+        st.dataframe(df, hide_index=True, width="stretch")
+    if semanales:
+        st.markdown("**Rutinas semanales** (columna = semana que empieza ese lunes)")
+        semanas = sorted({f["semana"] for f in semanales})
+        filas = {}
+        for f in semanales:
+            clave = (f["zona"], f"{f['codigo'] or ''} {f['control'] or ''}".strip())
+            filas.setdefault(clave, {"Zona": clave[0], "Rutina": clave[1]})[f"Sem. {f['semana']:%d/%m}"] = "✅" if f["hecho"] else "❌"
+        df = pd.DataFrame(list(filas.values()), columns=["Zona", "Rutina"] + [f"Sem. {x:%d/%m}" for x in semanas]).fillna("")
+        st.dataframe(df, hide_index=True, width="stretch")
+    if not diarias and not semanales:
+        st.caption("En este período no tocaba ningún control.")
+    else:
+        st.caption("✅ se hizo · ❌ no se hizo · vacío: no tocaba (la rutina todavía no existía o es un día futuro)")
+
+
 def _seccion_cumplimiento(d, usuario_nombre=None):
+    zonas = {z["id"]: z["nombre"] for z in d["zonas"]}
+    items = [{**i, "zona_nombre": zonas.get(i["zona_id"])} for i in d["items"]]
+    _estado_de_hoy(d, items)
+    st.divider()
+
+    st.subheader("Período")
     desde, hasta = _periodo()
     if hasta < desde:
         st.error("La fecha «Hasta» no puede ser anterior a «Desde».")
@@ -483,56 +568,87 @@ def _seccion_cumplimiento(d, usuario_nombre=None):
     except Exception as e:
         _mostrar_error("No se pudieron leer las rondas.", e)
         return
-    zonas = {z["id"]: z["nombre"] for z in d["zonas"]}
-    items = [{**i, "zona_nombre": zonas.get(i["zona_id"])} for i in d["items"]]
     filas = filas_respuestas(ejec, resp)
     cum = R.cumplimiento(items, filas, desde, hasta)
+    detalle = R.detalle_cumplimiento(items, filas, desde, hasta)
+    faltaron = [f for f in detalle if not f["hecho"]]
     problemas = [r for r in filas if r["resultado"] == "NO_OK"]
     m = st.columns(4)
     m[0].metric("Cumplimiento", f"{cum['total']['pct']:.0f} %" if cum["total"]["pct"] is not None else "—", help="Controles hechos ÷ controles que tocaban en el período")
-    m[1].metric("Rondas enviadas", len(ejec))
-    m[2].metric("Controles hechos", f"{cum['total']['hechas']} de {cum['total']['esperadas']}")
+    m[1].metric("Controles hechos", f"{cum['total']['hechas']} de {cum['total']['esperadas']}")
+    m[2].metric("No se hicieron", len(faltaron))
     m[3].metric("Problemas detectados", len(problemas))
-    if cum["por_zona"]:
-        st.markdown("**Por zona**")
-        st.dataframe(pd.DataFrame([{"Zona": z, "Tocaban": v["esperadas"], "Hechos": v["hechas"], "Cumplimiento %": v["pct"]} for z, v in cum["por_zona"].items()]), hide_index=True, width="stretch")
-    if len(cum["por_dia"]) > 1:
-        st.markdown("**Cumplimiento por día (%)**")
-        df = pd.DataFrame([{"Día": f"{dia:%d/%m}", "Cumplimiento %": v["pct"]} for dia, v in cum["por_dia"].items() if v["pct"] is not None])
-        if not df.empty:
-            st.bar_chart(df, x="Día", y="Cumplimiento %")
-    if cum["pendientes_hoy"]:
-        with st.expander(f"⏳ Pendientes de hoy ({len(cum['pendientes_hoy'])})"):
-            st.dataframe(pd.DataFrame([{"Zona": p["zona"], "Código": p["codigo"], "Rutina": p["titulo"], "Frecuencia": p["frecuencia"]} for p in cum["pendientes_hoy"]]), hide_index=True, width="stretch")
-    if filas:
-        st.markdown("**Por operador**")
-        por_op = {}
-        for r in filas:
-            o = por_op.setdefault(r["operador"], {"Operador": r["operador"], "Controles": 0, "Problemas": 0, "Rondas": set()})
-            o["Controles"] += 1
-            o["Problemas"] += 1 if r["resultado"] == "NO_OK" else 0
-            o["Rondas"].add(r["ejecucion_id"])
-        st.dataframe(pd.DataFrame([{**{k: v for k, v in o.items() if k != "Rondas"}, "Rondas": len(o["Rondas"])} for o in por_op.values()]), hide_index=True, width="stretch")
-    if problemas:
-        st.markdown("**Problemas detectados**")
-        st.dataframe(pd.DataFrame([{"Fecha": R.a_fecha(r["fecha"]).strftime("%d/%m/%Y"), "Zona": r["zona"], "Control": f"{r.get('item_codigo') or ''} {r['item_titulo']}".strip(),
-                                    "Operador": r["operador"], "Qué pasó": "; ".join(f"{x['texto']}" + (f": {R.fmt_num(x['valor'])}" if x.get("valor") is not None else "")
-                                                                                      for x in (r.get("detalle") or []) if x.get("resultado") == "NO_OK") or "—",
-                                    "Comentario": r.get("comentario"), "Reporte de falla": r.get("falla_id"), "Foto": "sí" if r.get("foto_ruta") else ""} for r in problemas]),
-                     hide_index=True, width="stretch")
-        con_foto = [r for r in problemas if r.get("foto_ruta")]
-        if con_foto:
-            etq = {f"{R.a_fecha(r['fecha']):%d/%m} · {r['zona']} · {r['item_titulo'][:40]} · {r['operador']}": r for r in con_foto}
-            elegido = st.selectbox("Ver la foto de un problema", list(etq), key="rut_ver_foto")
-            if st.button("📷 Mostrar la foto", key="rut_ver_foto_btn"):
-                try:
-                    st.image(db.url_evidencia(etq[elegido]["foto_ruta"]), width=420)
-                except Exception as e:
-                    st.error(f"No se pudo abrir la foto: {e}")
+
+    c_xl, c_pbi = st.columns([1, 1], vertical_alignment="center")
+    if items:
+        try:
+            excel = RX.excel_periodo(ejec, filas, desde, hasta, usuario_nombre, detalle=detalle)
+            c_xl.download_button("⬇️ Generar Excel del período", data=excel, file_name=M.nombre_archivo("Rondas", desde, hasta), key="rut_excel", type="primary",
+                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True,
+                                 help="Con la marca de la empresa y una tabla por hoja, lista para Power BI. Incluye «Cumplimiento»: se hizo o no, control por control.")
+        except Exception as e:
+            c_xl.warning(f"No se pudo armar el Excel: {e}")
+    with c_pbi.popover("Conectar con Power BI", use_container_width=True):
+        st.markdown("Power BI puede leer los datos **directo de la base**, sin Excel, y actualizarse solo. "
+                    "Las vistas son `pbi.rutinas_cumplimiento`, `pbi.rutinas_rondas`, `pbi.rutinas_controles` y `pbi.rutinas_lecturas`.")
+        st.caption("Instalación: archivo sql/powerbi_vistas.sql (una vez, en Supabase) y los pasos de sql/GUIA_POWERBI.md.")
+
+    vista = st.segmented_control("Ver", ["¿Se hizo?", f"Lo que faltó ({len(faltaron)})", "Por zona", "Por operador", f"Problemas ({len(problemas)})"],
+                                 default="¿Se hizo?", key="rut_cum_vista", label_visibility="collapsed") or "¿Se hizo?"
+    if vista == "¿Se hizo?":
+        _grilla(detalle, desde, hasta)
+        if len(cum["por_dia"]) > 1:
+            df = pd.DataFrame([{"Día": f"{dia:%d/%m}", "Cumplimiento %": v["pct"]} for dia, v in cum["por_dia"].items() if v["pct"] is not None])
+            if not df.empty:
+                st.markdown("**Cumplimiento por día (%)**")
+                st.bar_chart(df, x="Día", y="Cumplimiento %")
+    elif vista.startswith("Lo que faltó"):
+        if not faltaron:
+            st.success("Se hizo todo lo que tocaba en el período.")
+        else:
+            st.dataframe(pd.DataFrame([{"Fecha": f"{f['fecha']:%d/%m/%Y}" if f["frecuencia"] != "Semanal" else f"Semana del {f['semana']:%d/%m}",
+                                        "Zona": f["zona"], "Código": f["codigo"], "Rutina": f["control"], "Frecuencia": f["frecuencia"]}
+                                       for f in sorted(faltaron, key=lambda x: x["fecha"], reverse=True)]), hide_index=True, width="stretch")
+    elif vista == "Por zona":
+        if cum["por_zona"]:
+            st.dataframe(pd.DataFrame([{"Zona": z, "Tocaban": v["esperadas"], "Hechos": v["hechas"], "No se hicieron": v["esperadas"] - v["hechas"],
+                                        "Cumplimiento %": v["pct"]} for z, v in cum["por_zona"].items()]), hide_index=True, width="stretch")
+        else:
+            st.caption("Sin rutinas en el período.")
+    elif vista == "Por operador":
+        if not filas:
+            st.caption("Nadie envió rondas en el período.")
+        else:
+            por_op = {}
+            for r in filas:
+                o = por_op.setdefault(r["operador"], {"Operador": r["operador"], "Controles": 0, "Problemas": 0, "Rondas": set()})
+                o["Controles"] += 1
+                o["Problemas"] += 1 if r["resultado"] == "NO_OK" else 0
+                o["Rondas"].add(r["ejecucion_id"])
+            st.dataframe(pd.DataFrame([{**{k: v for k, v in o.items() if k != "Rondas"}, "Rondas": len(o["Rondas"])} for o in por_op.values()]), hide_index=True, width="stretch")
+    else:
+        _problemas(problemas)
     _lecturas(d, filas)
-    if filas:
-        st.download_button("⬇️ Descargar los resultados (Excel)", data=RX.excel_periodo(ejec, filas, desde, hasta, usuario_nombre), file_name=M.nombre_archivo("Rondas", desde, hasta), key="rut_excel",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+def _problemas(problemas):
+    if not problemas:
+        st.success("No se detectaron problemas en el período.")
+        return
+    st.dataframe(pd.DataFrame([{"Fecha": R.a_fecha(r["fecha"]).strftime("%d/%m/%Y"), "Zona": r["zona"], "Control": f"{r.get('item_codigo') or ''} {r['item_titulo']}".strip(),
+                                "Operador": r["operador"], "Qué pasó": "; ".join(f"{x['texto']}" + (f": {R.fmt_num(x['valor'])}" if x.get("valor") is not None else "")
+                                                                                  for x in (r.get("detalle") or []) if x.get("resultado") == "NO_OK") or "—",
+                                "Comentario": r.get("comentario"), "Reporte de falla": r.get("falla_id"), "Foto": "sí" if r.get("foto_ruta") else ""} for r in problemas]),
+                 hide_index=True, width="stretch")
+    con_foto = [r for r in problemas if r.get("foto_ruta")]
+    if con_foto:
+        etq = {f"{R.a_fecha(r['fecha']):%d/%m} · {r['zona']} · {r['item_titulo'][:40]} · {r['operador']}": r for r in con_foto}
+        elegido = st.selectbox("Ver la foto de un problema", list(etq), key="rut_ver_foto")
+        if st.button("📷 Mostrar la foto", key="rut_ver_foto_btn"):
+            try:
+                st.image(db.url_evidencia(etq[elegido]["foto_ruta"]), width=420)
+            except Exception as e:
+                st.error(f"No se pudo abrir la foto: {e}")
 
 
 def _lecturas(d, filas):
