@@ -4,7 +4,8 @@ import pandas as pd
 import streamlit as st
 
 from database import inventario_excel as inv
-from database.conection import insert_repuesto, get_repuestos
+from database.conection import insert_repuesto, get_repuestos, update_repuesto
+from views import ui
 
 try:  # la caché corta de repuestos existe en las versiones nuevas de conection.py
     from database.conection import get_repuestos_cached
@@ -50,7 +51,7 @@ def _render_resultado_anterior():
 
 def _render_importador(repuestos):
     st.session_state.setdefault("inv_n", 0)
-    with st.expander("📤 Cargar mi inventario desde Excel", expanded=False):
+    with st.expander("Importar inventario desde Excel", expanded=False):
         st.caption(
             "Subí tu planilla tal como la tenés: no hace falta renombrar columnas ni tener códigos. "
             "Vas a elegir qué columna es cada dato, ver una vista previa y recién ahí confirmar."
@@ -169,73 +170,179 @@ def _render_importador(repuestos):
 # ----------------------------------------------------------------
 # Pantalla
 # ----------------------------------------------------------------
-def render_repuestos():
-    st.title("📦 Inventario de Repuestos")
+FILTROS = ["Todos", "Bajo mínimo", "Sin stock", "Sin ubicación"]
 
+
+def _estado(r):
+    stock, minimo = r.get("stock_actual") or 0, r.get("stock_minimo") or 0
+    if stock <= 0:
+        return "Sin stock"
+    if stock <= minimo:
+        return "Bajo mínimo"
+    return "Disponible"
+
+
+def _filtrar(repuestos, texto, filtro):
+    lista = repuestos
+    if texto:
+        palabras = texto.casefold().split()
+        lista = [r for r in lista if all(p in " ".join(str(r.get(c) or "") for c in ("nombre", "codigo_interno", "ubicacion")).casefold()
+                                         for p in palabras)]
+    if filtro == "Bajo mínimo":
+        lista = [r for r in lista if _estado(r) != "Disponible"]
+    elif filtro == "Sin stock":
+        lista = [r for r in lista if _estado(r) == "Sin stock"]
+    elif filtro == "Sin ubicación":
+        lista = [r for r in lista if not (r.get("ubicacion") or "").strip()]
+    orden = {"Sin stock": 0, "Bajo mínimo": 1, "Disponible": 2}
+    return sorted(lista, key=lambda r: (orden[_estado(r)], str(r.get("nombre") or "").casefold()))
+
+
+@st.dialog("Nuevo repuesto")
+def _dialogo_nuevo(repuestos):
+    nombre = st.text_input("Nombre *", placeholder="Ej.: Rodamiento SKF 6204")
+    c1, c2 = st.columns(2)
+    codigo = c1.text_input("Código interno *", placeholder="Ej.: REP-0142")
+    ubicacion = c2.text_input("Ubicación", placeholder="Ej.: Estante 1 – Fila 3")
+    c3, c4, c5 = st.columns(3)
+    stock = c3.number_input("Stock inicial", min_value=0, step=1)
+    minimo = c4.number_input("Stock mínimo", min_value=0, step=1)
+    costo = c5.number_input("Costo unitario (Gs.)", min_value=0, step=1000)
+    if st.button("Guardar repuesto", type="primary", use_container_width=True):
+        if not nombre.strip() or not codigo.strip():
+            st.error("El nombre y el código son obligatorios.")
+            return
+        if any(str(r.get("codigo_interno") or "").strip().casefold() == codigo.strip().casefold() for r in repuestos):
+            st.error("Ese código ya existe en el inventario.")
+            return
+        fila = {"nombre": nombre.strip(), "codigo_interno": codigo.strip(), "stock_actual": int(stock),
+                "stock_minimo": int(minimo), "costo_unitario": int(costo)}
+        if ubicacion.strip():  # solo si se completó: funciona aunque la columna todavía no exista
+            fila["ubicacion"] = ubicacion.strip()
+        try:
+            insert_repuesto(fila)
+        except Exception as e:
+            ui.error_amigable("No se pudo guardar el repuesto. Si cargaste ubicación, puede faltar esa columna en la base.", e)
+            return
+        _refrescar_repuestos()
+        st.session_state["rep_mensaje"] = f"Repuesto «{nombre.strip()}» agregado."
+        st.rerun()
+
+
+def _editor(r, repuestos):
+    rid = r["id"]
+    with st.container(border=True):
+        st.markdown(f"**{ui.texto_md(r.get('nombre'))}**")
+        st.caption(f"{r.get('codigo_interno') or '—'} · {_estado(r)}")
+        nombre = st.text_input("Nombre", value=r.get("nombre") or "", key=f"rep_nom_{rid}")
+        c1, c2 = st.columns(2)
+        codigo = c1.text_input("Código interno", value=r.get("codigo_interno") or "", key=f"rep_cod_{rid}")
+        ubicacion = c2.text_input("Ubicación", value=r.get("ubicacion") or "", key=f"rep_ubi_{rid}")
+        c3, c4 = st.columns(2)
+        minimo = c3.number_input("Stock mínimo", min_value=0, step=1, value=int(r.get("stock_minimo") or 0), key=f"rep_min_{rid}")
+        costo = c4.number_input("Costo unitario (Gs.)", min_value=0, step=1000, value=int(r.get("costo_unitario") or 0), key=f"rep_cos_{rid}")
+        stock = st.number_input("Stock actual (ajuste de inventario)", min_value=0, step=1, value=int(r.get("stock_actual") or 0),
+                                key=f"rep_stk_{rid}", help="Usalo solo para corregir después de un conteo físico. "
+                                                          "Los consumos de las OTs descuentan solos.")
+        if st.button("Guardar cambios", type="primary", key=f"rep_guardar_{rid}", use_container_width=True):
+            if not nombre.strip() or not codigo.strip():
+                st.error("El nombre y el código son obligatorios.")
+                return
+            if any(x["id"] != rid and str(x.get("codigo_interno") or "").strip().casefold() == codigo.strip().casefold() for x in repuestos):
+                st.error("Ese código ya lo usa otro repuesto.")
+                return
+            patch = {}
+            for campo, valor in (("nombre", nombre.strip()), ("codigo_interno", codigo.strip()), ("stock_minimo", int(minimo)),
+                                 ("costo_unitario", int(costo)), ("stock_actual", int(stock))):
+                if valor != r.get(campo):
+                    patch[campo] = valor
+            if (ubicacion.strip() or None) != ((r.get("ubicacion") or "").strip() or None):
+                patch["ubicacion"] = ubicacion.strip() or None
+            if not patch:
+                st.info("No había cambios.")
+                return
+            try:
+                update_repuesto(rid, patch)
+            except Exception as e:
+                ui.error_amigable("No se pudieron guardar los cambios.", e)
+                return
+            _refrescar_repuestos()
+            st.session_state["rep_mensaje"] = "Repuesto actualizado."
+            st.rerun()
+
+
+def _tarjetas(lista):
+    """Vista de consulta (celular): tarjeta por repuesto con stock y ubicación."""
+    color = {"Sin stock": "red", "Bajo mínimo": "orange", "Disponible": "green"}
+    for r in lista[:40]:
+        with st.container(border=True):
+            c1, c2 = st.columns([3, 2], vertical_alignment="center")
+            c1.markdown(f"**{ui.texto_md(r.get('nombre'))}**  \n:gray[{ui.texto_md(r.get('codigo_interno') or '—')}]")
+            c2.markdown(f":{color[_estado(r)]}-badge[{_estado(r)}]")
+            c3, c4 = st.columns(2)
+            c3.markdown(f":gray[Stock]  \n**{r.get('stock_actual') or 0}** · mín. {r.get('stock_minimo') or 0}")
+            c4.markdown(f":gray[Ubicación]  \n**{ui.texto_md(r.get('ubicacion') or 'Sin ubicación')}**")
+    if len(lista) > 40:
+        st.caption(f"Se muestran 40 de {len(lista)}. Afiná la búsqueda.")
+
+
+def render_repuestos(modo_consulta=False):
     repuestos = st.session_state.get("repuestos", [])
-
-    # --- REPUESTOS CRÍTICOS (stock en o por debajo del mínimo) ---
-    criticos = [r for r in repuestos if r.get("stock_actual", 0) <= r.get("stock_minimo", 0)]
-    if criticos:
-        st.markdown("##### 🚨 Repuestos en nivel crítico de stock")
-        for r in criticos:
-            ubicacion = f"<br><small style='color:#7C8894;'>📍 {r.get('ubicacion')}</small>" if r.get("ubicacion") else ""
-            st.markdown(f"""
-            <div class='industrial-panel' style='border-color:#EF4444;'>
-                <strong>{r.get('nombre')}</strong> <small style='color:#7C8894;'>[{r.get('codigo_interno')}]</small><br>
-                <span style='color:#EF4444; font-weight:bold;'>Stock actual: {r.get('stock_actual')} / Mínimo: {r.get('stock_minimo')}</span>{ubicacion}
-            </div>
-            """, unsafe_allow_html=True)
-        st.markdown("---")
-
-    # --- CARGA MASIVA DESDE EXCEL (para el inventario inicial) ---
-    _render_resultado_anterior()
-    _render_importador(repuestos)
-
-    st.markdown("---")
-
-    # --- FORMULARIO DE CREACIÓN ---
-    st.subheader("Añadir Nuevo Repuesto al Stock")
-    with st.form("form_nuevo_repuesto", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            nombre = st.text_input("Nombre del Repuesto", placeholder="Ej: Rodamiento SKF 6204")
-            codigo_interno = st.text_input("Código Interno", placeholder="Ej: REP-ROD-001")
-            ubicacion = st.text_input("Ubicación (opcional)", placeholder="Ej: Estante 1 - Fila 3")
-
-        with col2:
-            stock_actual = st.number_input("Stock Inicial", min_value=0, step=1, value=0)
-            costo_unitario = st.number_input("Costo Unitario (Gs.)", min_value=0, step=100, value=0)
-
-        stock_minimo = st.number_input("Stock Mínimo (dispara alerta de crítico)", min_value=0, step=1, value=0)
-
-        submit = st.form_submit_button("Guardar en Inventario")
-
-        if submit:
-            if not nombre or not codigo_interno:
-                st.error("❌ El nombre y el código interno son requeridos.")
-            elif any(r.get("codigo_interno") == codigo_interno for r in repuestos):
-                st.error("❌ Ese código interno ya existe en el inventario.")
-            else:
-                nuevo_repuesto = {
-                    "nombre": nombre,
-                    "codigo_interno": codigo_interno,
-                    "stock_actual": int(stock_actual),
-                    "stock_minimo": int(stock_minimo),
-                    "costo_unitario": int(costo_unitario)
-                }
-                if ubicacion.strip():  # solo se envía si se completó: así funciona aunque todavía no hayas corrido el SQL
-                    nuevo_repuesto["ubicacion"] = ubicacion.strip()
-                insert_repuesto(nuevo_repuesto)
-                _refrescar_repuestos()
-                st.success(f"✅ Repuesto '{nombre}' añadido correctamente.")
-                st.rerun()
-
-    # --- TABLA DE STOCK ---
-    st.markdown("---")
-    st.subheader("Materiales en Almacén")
-    if not repuestos:
-        st.info("El inventario está vacío actualmente.")
+    if modo_consulta:
+        ui.encabezado("Repuestos", "Consultá stock y ubicación por código o nombre.")
     else:
-        st.dataframe(repuestos, width="stretch", hide_index=True)
+        cab, acc = st.columns([4, 1.2], vertical_alignment="bottom")
+        with cab:
+            ui.encabezado("Repuestos", "Stock, mínimos y ubicación. Tocá un repuesto para editarlo.")
+        if acc.button("+ Nuevo repuesto", type="primary", use_container_width=True):
+            _dialogo_nuevo(repuestos)
+
+    mensaje = st.session_state.pop("rep_mensaje", None)
+    if mensaje:
+        st.toast(mensaje, icon=":material/check_circle:")
+    if not modo_consulta:
+        _render_resultado_anterior()
+
+    if not repuestos:
+        ui.estado_vacio("Todavía no hay repuestos cargados.",
+                        None if modo_consulta else "Agregá uno con «+ Nuevo repuesto» o importá tu planilla desde Excel (abajo).")
+    else:
+        texto = st.text_input("Buscar", placeholder="Código, nombre o ubicación", key="rep_buscar", label_visibility="collapsed")
+        bajos = len([r for r in repuestos if _estado(r) != "Disponible"])
+        filtro = st.pills("Filtro", FILTROS, default="Todos", key="rep_filtro", label_visibility="collapsed",
+                          format_func=lambda f: f"Bajo mínimo ({bajos})" if f == "Bajo mínimo" else f) or "Todos"
+        lista = _filtrar(repuestos, texto, filtro)
+        if not lista:
+            ui.estado_vacio("Ningún repuesto coincide con la búsqueda.")
+        elif modo_consulta:
+            st.caption(f"{len(lista)} resultado(s)")
+            _tarjetas(lista)
+        else:
+            izq, der = st.columns([3, 2], gap="medium")
+            with izq:
+                df = pd.DataFrame([{
+                    "id": r["id"], "Código": r.get("codigo_interno") or "—", "Repuesto": r.get("nombre"),
+                    "Stock": r.get("stock_actual") or 0, "Mínimo": r.get("stock_minimo") or 0,
+                    "Ubicación": r.get("ubicacion") or "—", "Costo unit.": ui.formato_gs(r.get("costo_unitario")),
+                    "Estado": _estado(r),
+                } for r in lista])
+                evento = st.dataframe(df, hide_index=True, use_container_width=True, on_select="rerun", selection_mode="single-row",
+                                      key="rep_tabla", column_order=[c for c in df.columns if c != "id"],
+                                      height=min(38 + 35 * len(df), 600))
+                st.caption(f"{len(lista)} de {len(repuestos)} repuestos.")
+                filas = evento.selection.rows if evento and evento.selection else []
+                sel = None
+                if filas and filas[0] < len(df):
+                    valor = df.iloc[filas[0]]["id"]
+                    sel = valor.item() if hasattr(valor, "item") else valor
+            with der:
+                elegido = next((r for r in repuestos if r["id"] == sel), None)
+                if elegido:
+                    _editor(elegido, repuestos)
+                else:
+                    with st.container(border=True):
+                        st.caption("Elegí un repuesto de la lista para editar sus datos, mínimo, ubicación o hacer un ajuste de inventario.")
+
+    if not modo_consulta:
+        st.divider()
+        _render_importador(repuestos)
