@@ -166,12 +166,16 @@ def _instrucciones(it):
         fotos_paso = [f for f in it["fotos"] if f.get("tipo") == "paso"]
         for f in [f for f in fotos_paso if f.get("paso_orden") is None]:
             _mostrar_foto(f)
+        ordenes = {p["orden"] for p in it["pasos"]}
         if it["pasos"]:
             for p in it["pasos"]:
                 st.markdown(f"**{p['orden']}.** {p['texto']}")
                 for f in [f for f in fotos_paso if f.get("paso_orden") == p["orden"]]:
                     _mostrar_foto(f)
-        else:
+        # fotos ligadas a un número de paso que ya no existe (se borraron o reordenaron los pasos): se muestran igual, al final
+        for f in [f for f in fotos_paso if f.get("paso_orden") is not None and f.get("paso_orden") not in ordenes]:
+            _mostrar_foto(f)
+        if not it["pasos"]:
             st.info("Todavía no hay instrucciones cargadas para este control. Consultá con tu supervisor.")
         ok = [f for f in it["fotos"] if f.get("tipo") == "ok"]
         mal = [f for f in it["fotos"] if f.get("tipo") == "mal"]
