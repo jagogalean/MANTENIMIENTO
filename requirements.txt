@@ -7,3 +7,4 @@ reportlab
 pdfplumber
 google-generativeai
 PyMuPDF
+pillow-heif
