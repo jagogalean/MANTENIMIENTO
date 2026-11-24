@@ -160,7 +160,13 @@ def url_evidencia(ruta, segundos=3600):
 
 # ---------------- Lectura de la clave ----------------
 def rol_de_la_clave(clave):
-    """Lee, sin conectarse, el rol que trae la clave de Supabase (service_role o anon). None si no se puede leer."""
+    """Lee, sin conectarse, el rol que trae la clave de Supabase (service_role o anon). None si no se puede leer.
+    Entiende también las claves nuevas de Supabase: sb_secret_… (equivale a service_role) y sb_publishable_… (equivale a anon)."""
+    clave = str(clave or "").strip()
+    if clave.startswith("sb_secret_"):
+        return "service_role"
+    if clave.startswith("sb_publishable_"):
+        return "anon"
     try:
         import base64
         import json
