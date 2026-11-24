@@ -331,6 +331,11 @@ def pasos_desde_texto(texto):
 def preparar_foto(contenido: bytes, max_lado=1600, calidad=80):
     """Achica una foto de celular (máx. 1600 px, JPEG calidad 80), la endereza según como se sacó y devuelve (bytes, content_type)."""
     from PIL import Image, ImageOps
+    try:                                         # fotos HEIC/HEIF (iPhone, algunos Samsung): las lee si está pillow-heif
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+    except Exception:
+        pass
     imagen = ImageOps.exif_transpose(Image.open(io.BytesIO(contenido)))
     if imagen.mode in ("RGBA", "LA", "P"):
         imagen = imagen.convert("RGBA")
