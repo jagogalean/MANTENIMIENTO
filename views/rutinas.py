@@ -35,6 +35,21 @@ def _cargar_config(version):
             "fotos": db.listar_fotos(), "operadores": db.listar_operadores()}
 
 
+AVISO_CLAVE = ("la app no tiene permiso para escribir en las tablas de rutinas. En Streamlit → Settings → Secrets, "
+               "SUPABASE_KEY tiene que ser la clave **secreta** de Supabase (service_role o sb_secret_…), no la pública (anon o sb_publishable_…). "
+               "Cambiala, guardá y reiniciá la app.")
+
+
+def _es_permiso(e):
+    texto = str(e)
+    return "42501" in texto or "row-level security" in texto or "permission denied" in texto or "Unauthorized" in texto
+
+
+def _motivo(e):
+    """El error de Supabase traducido: si es de permisos (RLS), dice qué hacer."""
+    return AVISO_CLAVE if _es_permiso(e) else str(e)
+
+
 def _mostrar_error(titulo, e):
     st.warning(titulo)
     st.code(f"{type(e).__name__}: {e}", language=None)
@@ -76,8 +91,7 @@ def render_rutinas(usuario):
         return
     clave = db.rol_de_la_clave(st.secrets.get("SUPABASE_KEY", ""))
     if clave and clave != "service_role":
-        st.warning(f"Tu clave SUPABASE_KEY es «{clave}». Las tablas de rutinas tienen seguridad por filas (RLS) y esa clave no puede leerlas ni guardarlas: "
-                   "usá la clave service_role en los secrets (o avisame y lo resolvemos).")
+        st.warning(f"Tu SUPABASE_KEY es la clave pública («{clave}»): con ella no se pueden guardar rutinas, pasos ni fotos. " + AVISO_CLAVE)
     secciones = ["📊 Cumplimiento"] + (["📋 Rutinas", "👷 Operadores y PIN", "🖨️ QR de las zonas"] if es_admin else [])
     seccion = st.radio("Sección", secciones, horizontal=True, label_visibility="collapsed", key="rut_seccion")
     flash = st.session_state.pop("rut_flash", None)
@@ -196,7 +210,7 @@ def _form_item(item, zona, d):
                         datos["orden"] = max([i.get("orden") or 0 for i in d["items"] if i["zona_id"] == zona["id"]] + [0]) + 1
                         db.insertar_item(datos)
                 except Exception as e:
-                    st.error(f"No se pudo guardar: {e}")
+                    st.error(f"No se pudo guardar: {_motivo(e)}")
                     return
                 _invalidar()
                 _flash("success", "Rutina guardada." if item else "Rutina creada. Ahora elegila en la lista para cargarle puntos de control, pasos y fotos.")
@@ -222,7 +236,7 @@ def _editor_item(item, zona, d):
             try:
                 db.borrar_item(iid, d["fotos"])
             except Exception as e:
-                st.error(f"No se pudo eliminar: {e}")
+                st.error(f"No se pudo eliminar: {_motivo(e)}")
                 return
             _invalidar()
             _flash("success", "Rutina eliminada.")
@@ -258,7 +272,7 @@ def _tab_puntos(item, d):
         try:
             db.reemplazar_puntos(iid, filas, d["puntos"])
         except Exception as e:
-            st.error(f"No se pudo guardar: {e}")
+            st.error(f"No se pudo guardar: {_motivo(e)}")
             return
         _invalidar()
         _flash("success", f"Se guardaron {len(filas)} punto(s) de control.")
@@ -292,7 +306,7 @@ def _tab_pasos(item, zona, d):
         try:
             db.reemplazar_pasos(iid, pasos, d["pasos"])
         except Exception as e:
-            st.error(f"No se pudo guardar: {e}")
+            st.error(f"No se pudo guardar: {_motivo(e)}")
             return
         st.session_state.pop("rut_ia_aviso", None)
         _invalidar()
@@ -322,24 +336,49 @@ def _tab_fotos(item, d):
                 db.borrar_foto(f)
                 _invalidar()
                 st.rerun()
-    with st.form(f"rut_form_foto_{iid}", clear_on_submit=True):
-        archivos = st.file_uploader("Fotos", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"rut_up_{iid}")
-        c1, c2 = st.columns(2)
-        tipo = c1.selectbox("¿Qué muestra?", list(TIPOS_FOTO))
-        paso = c2.selectbox("¿De qué paso? (solo si es «Paso del paso a paso»)", [GENERAL] + [f"Paso {p['orden']}: {p['texto'][:50]}" for p in pasos])
-        leyenda = st.text_input("Leyenda (opcional)", placeholder="Ej: Abrir esta tapa con la llave 13")
-        if st.form_submit_button("📤 Subir fotos", type="primary") and archivos:
-            paso_orden = None if paso == GENERAL else pasos[[f"Paso {p['orden']}: {p['texto'][:50]}" for p in pasos].index(paso)]["orden"]
-            ok, errores = 0, []
-            for a in archivos:
+    # Sin formulario: así la foto elegida se ve enseguida (en el celular, dentro de un formulario no se notaba si había quedado cargada).
+    n = st.session_state.get(f"rut_up_n_{iid}", 0)                       # cambia la clave para vaciar el selector después de subir
+    archivos = st.file_uploader("Fotos (de la galería o sacándolas con la cámara)", accept_multiple_files=True, key=f"rut_up_{iid}_{n}",
+                                help="Acepta cualquier foto del celular (JPG, PNG, HEIC, WEBP). Se achica sola.")
+    with st.expander("¿No te abre la cámara o no queda la foto? Sacala desde acá"):
+        camara = st.camera_input("Sacar la foto", key=f"rut_cam_{iid}_{n}", label_visibility="collapsed")
+    elegidas = list(archivos or []) + ([camara] if camara is not None else [])
+    listas, errores = [], []
+    for a in elegidas:
+        try:
+            listas.append((a.name, *R.preparar_foto(a.getvalue())))
+        except Exception as e:
+            errores.append(f"«{a.name}» no se pudo leer ({type(e).__name__}). Probá con otra o sacala con la cámara.")
+    for err in errores:
+        st.error(err)
+    if listas:
+        st.success(f"✅ {len(listas)} foto(s) lista(s) para subir.")
+        cols = st.columns(min(4, len(listas)))
+        for k, (_, contenido, _) in enumerate(listas):
+            cols[k % len(cols)].image(contenido, width=140)
+    c1, c2 = st.columns(2)
+    tipo = c1.selectbox("¿Qué muestra?", list(TIPOS_FOTO), key=f"rut_ftipo_{iid}")
+    opciones_paso = [GENERAL] + [f"Paso {p['orden']}: {p['texto'][:50]}" for p in pasos]
+    paso = c2.selectbox("¿De qué paso? (solo si es «Paso del paso a paso»)", opciones_paso, key=f"rut_fpaso_{iid}",
+                        disabled=TIPOS_FOTO[tipo] != "paso")
+    if TIPOS_FOTO[tipo] == "paso" and not pasos:
+        st.caption("Todavía no hay pasos guardados: la foto va como general. Guardá el paso a paso primero si querés ligarla a un paso.")
+    leyenda = st.text_input("Leyenda (opcional)", placeholder="Ej: Abrir esta tapa con la llave 13", key=f"rut_fley_{iid}_{n}")
+    if st.button("📤 Subir fotos", type="primary", key=f"rut_fsubir_{iid}"):
+        if not listas:
+            st.warning("No hay ninguna foto elegida. Tocá «Browse files» (o la cámara de arriba) y esperá a ver la foto antes de subir.")
+        else:
+            paso_orden = None if paso == GENERAL or TIPOS_FOTO[tipo] != "paso" else pasos[opciones_paso.index(paso) - 1]["orden"]
+            ok, fallas = 0, []
+            for nombre, contenido, ct in listas:
                 try:
-                    contenido, ct = R.preparar_foto(a.getvalue())
-                    db.subir_foto_ref(iid, contenido, ct, TIPOS_FOTO[tipo], paso_orden if TIPOS_FOTO[tipo] == "paso" else None, leyenda, len(propias) + ok + 1)
+                    db.subir_foto_ref(iid, contenido, ct, TIPOS_FOTO[tipo], paso_orden, leyenda, len(propias) + ok + 1)
                     ok += 1
                 except Exception as e:
-                    errores.append(f"«{a.name}»: {e}")
+                    fallas.append(f"«{nombre}»: {_motivo(e)}")
+            st.session_state[f"rut_up_n_{iid}"] = n + 1
             _invalidar()
-            _flash("success" if not errores else "warning", f"Se subieron {ok} foto(s) (se achican solas)." + (" " + " ".join(errores) if errores else ""))
+            _flash("success" if not fallas else "warning", f"Se subieron {ok} foto(s)." + (" No se pudieron subir: " + " ".join(fallas) if fallas else ""))
             st.rerun()
 
 
@@ -390,7 +429,7 @@ def _seccion_operadores(d):
             try:
                 db.establecer_pin(o["id"], pin)
             except Exception as e:
-                st.error(f"No se pudo guardar el PIN: {e}")
+                st.error(f"No se pudo guardar el PIN: {_motivo(e)}")
                 return
             _invalidar()
             st.session_state.pop(clave_pin, None)
