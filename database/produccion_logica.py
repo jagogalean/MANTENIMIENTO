@@ -150,7 +150,8 @@ def resumen_fila(fila, columnas, ahora):
         estado = PROGRAMADO if ahora < inicio else (EN_PRODUCCION if ahora <= fin else ATRASADO)
     else:
         estado = SIN_FECHA
-    avance = min(producido / solicitado, 1) if solicitado else (1 if estado == TERMINADO else 0)
+    # siempre float entre 0.0 y 1.0: st.progress toma un ENTERO como porcentaje (1 = 1 %), por eso antes «100 %» se veía casi vacío
+    avance = float(min(producido / solicitado, 1.0)) if solicitado else (1.0 if estado == TERMINADO else 0.0)
     return {"cliente": g("cliente"), "oc": g("oc"), "codigo": g("codigo"), "referencia": g("referencia"),
             "solicitado": solicitado, "producido": producido, "disponible": disponible, "estado": estado,
             "avance": avance, "inicio": inicio, "fin": fin}
