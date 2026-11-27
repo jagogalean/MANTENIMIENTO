@@ -135,8 +135,12 @@ if not st.session_state.usuario_actual:
                         st.rerun()
     st.stop()
 
-usuario = st.session_state.usuario_actual
-rol = usuario.get("rol", "tecnico")
+# Un usuario puede tener varios roles, guardados como "tecnico,logistica". El primero es el principal.
+roles = [r.strip() for r in str(st.session_state.usuario_actual.get("rol") or "tecnico").split(",") if r.strip()] or ["tecnico"]
+if "admin" in roles:
+    roles = ["admin"]                                     # el coordinador ya ve todo
+rol = roles[0]
+usuario = {**st.session_state.usuario_actual, "rol": rol}  # cada pantalla recibe el rol que le corresponde (ver _como)
 
 # ============================================================
 # DATOS EN MEMORIA DE LA SESIÓN
@@ -156,7 +160,7 @@ _CARGAS = {
     "plan_actividades": get_actividades,
     "plan_ejecuciones": get_plan_ejecuciones,
 }
-_SOLO_PRODUCCION = rol in ("ventas", "planificacion")      # no usan datos de mantenimiento: entran más rápido
+_SOLO_PRODUCCION = all(r in ("ventas", "planificacion") for r in roles)      # no usan datos de mantenimiento: entran más rápido
 for _clave, _funcion in _CARGAS.items():
     if _clave not in st.session_state:
         st.session_state[_clave] = [] if _SOLO_PRODUCCION else _funcion()
@@ -198,7 +202,7 @@ avisos_qr_pendientes = len(avisos_pendientes_lista or [])
 st.session_state.solicitudes_qr_pendientes = avisos_qr_pendientes
 
 mis_ots_pendientes = 0
-if rol == "tecnico" and usuario.get("tecnico_id"):
+if "tecnico" in roles and usuario.get("tecnico_id"):
     mis_ots_pendientes = len([o for o in st.session_state.ots
                               if o.get("tecnico_id") == usuario.get("tecnico_id")
                               and o.get("estado") != "Completada"]) + backlog_sin_asignar
@@ -309,7 +313,7 @@ p_rutinas = P(pagina_rutinas, "Rutinas del operador", ":material/fact_check:", "
 p_maquinas = P(render_maquinas, "Máquinas", ":material/precision_manufacturing:", "maquinas")
 p_fallas = P(render_fallas, ui.con_contador("Fallas y RCA", fallas_abiertas), ":material/troubleshoot:", "fallas")
 p_recepcion = P(render_checklists, "Recepción y entrega", ":material/swap_horiz:", "recepcion",
-                default=desde_qr_checklist and rol in ("admin", "tecnico"))
+                default=desde_qr_checklist and any(r in ("admin", "tecnico") for r in roles))
 p_repuestos = P(render_repuestos, ui.con_contador("Repuestos", stock_critico), ":material/inventory_2:", "repuestos")
 p_compras = P(pagina_compras, "Solicitudes de compra", ":material/shopping_cart:", "compras")
 p_comparativo = P(pagina_comparativo, "Comparativo de cotizaciones", ":material/balance:", "cotizaciones")
@@ -331,33 +335,76 @@ if rol == "admin":
         "Gestión": [p_presupuesto, p_reportes, p_productividad, p_produccion, p_asistencia],
         "Configuración": [p_tecnicos, p_usuarios],
     }
-elif rol == "gerente":
+elif rol == "gerente" and len(roles) == 1:
     paginas = {
         "": [p_inicio],
         "Gestión": [p_presupuesto, p_reportes, p_productividad, p_produccion],
         "Trabajo": [p_rutinas],
     }
-elif rol == "tecnico":
-    paginas = [
-        P(pagina_mis_ots, ui.con_contador("Mis OTs", mis_ots_pendientes), ":material/assignment_ind:", "mis-ots",
-          default=not desde_qr_checklist),
-        p_recepcion,
-        P(pagina_repuestos_consulta, "Repuestos", ":material/inventory_2:", "repuestos-consulta"),
-        P(pagina_agenda_tecnico, "Agenda del día", ":material/today:", "agenda"),
-    ]
-elif rol == "operador":
-    paginas = [P(pagina_reportar_falla, "Reportar falla", ":material/campaign:", "reportar", default=True)]
-elif rol == "logistica":
-    paginas = [P(pagina_productividad, "Productividad", ":material/factory:", "productividad", default=True)]
-elif rol == "asistencia":
-    paginas = [P(pagina_asistencia, "Asistencia y horas extras", ":material/schedule:", "asistencia", default=True)]
-elif rol in ("ventas", "planificacion"):
-    paginas = [P(pagina_produccion, "Producción", ":material/conveyor_belt:", "produccion", default=True)]
-elif rol == "consulta_asistencia":
-    paginas = [P(pagina_asistencia_consulta, "Asistencia (consulta)", ":material/schedule:", "asistencia-consulta",
-                 default=True)]
 else:
-    paginas = [P(pagina_mis_ots, "Mis OTs", ":material/assignment_ind:", "mis-ots", default=True)]
+    paginas = None
+
+
+def _como(r, funcion):
+    """La pantalla corre con el usuario en el rol «r» (para quien tiene varios roles, cada pantalla ve el suyo)."""
+    def pagina():
+        global usuario
+        previo = usuario
+        usuario = {**previo, "rol": r}
+        try:
+            funcion()
+        finally:
+            usuario = previo
+    pagina.__name__ = f"{funcion.__name__}_{r}"
+    return pagina
+
+
+def paginas_de(r, principal):
+    """Pantallas de un rol (que no sea coordinador ni gerencia). «principal»: la primera es la de inicio."""
+    if r == "tecnico":
+        lista = [(pagina_mis_ots, ui.con_contador("Mis OTs", mis_ots_pendientes), ":material/assignment_ind:", "mis-ots"),
+                 (render_checklists, "Recepción y entrega", ":material/swap_horiz:", "recepcion"),
+                 (pagina_repuestos_consulta, "Repuestos", ":material/inventory_2:", "repuestos-consulta"),
+                 (pagina_agenda_tecnico, "Agenda del día", ":material/today:", "agenda")]
+    elif r == "operador":
+        lista = [(pagina_reportar_falla, "Reportar falla", ":material/campaign:", "reportar")]
+    elif r == "logistica":
+        lista = [(pagina_productividad, "Productividad", ":material/factory:", "productividad")]
+    elif r == "asistencia":
+        lista = [(pagina_asistencia, "Asistencia y horas extras", ":material/schedule:", "asistencia")]
+    elif r in ("ventas", "planificacion"):
+        lista = [(pagina_produccion, "Producción", ":material/conveyor_belt:", "produccion")]
+    elif r == "consulta_asistencia":
+        lista = [(pagina_asistencia_consulta, "Asistencia (consulta)", ":material/schedule:", "asistencia-consulta")]
+    else:
+        lista = [(pagina_mis_ots, "Mis OTs", ":material/assignment_ind:", "mis-ots")]
+    def es_inicio(i, ruta):
+        if not principal:
+            return False
+        if r == "tecnico" and desde_qr_checklist:          # vino del QR de checklist: abre Recepción
+            return ruta == "recepcion"
+        return i == 0
+    return [P(_como(r, f), titulo, icono, ruta, default=es_inicio(i, ruta)) for i, (f, titulo, icono, ruta) in enumerate(lista)]
+
+
+SECCION_ROL = {"tecnico": "Mi trabajo", "operador": "Fallas", "logistica": "Logística", "asistencia": "Asistencia",
+               "consulta_asistencia": "Asistencia", "planificacion": "Producción", "ventas": "Producción"}
+
+if paginas is None:
+    otros = [r for r in roles if r not in ("admin", "gerente")]
+    if len(roles) == 1:
+        paginas = paginas_de(rol, True)
+    else:
+        # varios roles: una sección del menú por rol, sin pantallas repetidas
+        paginas = {}
+        if "gerente" in roles:
+            paginas.update({"": [p_inicio], "Gestión": [p_presupuesto, p_reportes, p_productividad, p_produccion], "Trabajo": [p_rutinas]})
+        vistas = {p.url_path for grupo in paginas.values() for p in grupo}
+        for i, r in enumerate(otros):
+            nuevas = [p for p in paginas_de(r, i == 0 and "gerente" not in roles) if p.url_path not in vistas]
+            vistas |= {p.url_path for p in nuevas}
+            if nuevas:
+                paginas.setdefault(SECCION_ROL.get(r, r.capitalize()), []).extend(nuevas)
 
 _lista_paginas = [p for grupo in paginas.values() for p in grupo] if isinstance(paginas, dict) else paginas
 MAPA_PAGINAS = {p.url_path: p for p in _lista_paginas}
@@ -369,12 +416,12 @@ navegacion = st.navigation(paginas)
 NOMBRE_ROL = {
     "admin": "Coordinador", "gerente": "Gerencia", "tecnico": "Técnico", "operador": "Operador",
     "logistica": "Logística", "asistencia": "Asistencia", "consulta_asistencia": "Consulta de asistencia",
-    "planificacion": "Supervisor de producción", "ventas": "Ventas",
+    "planificacion": "Coordinador de producción", "ventas": "Ventas",
 }
 with st.sidebar:
     st.divider()
     st.markdown(f"**{usuario.get('nombre') or 'Usuario'}**")
-    st.caption(f"{NOMBRE_ROL.get(rol, rol)} · Mantenimiento Vitopel")
+    st.caption(" + ".join(NOMBRE_ROL.get(r, r) for r in roles) + " · Mantenimiento Vitopel")
     if st.button("Cerrar sesión", icon=":material/logout:", use_container_width=True):
         logout_usuario()
         st.session_state.clear()
