@@ -2,7 +2,7 @@
 Producción para Ventas: la Planilla de Planificación de la Producción, fácil de leer.
 
 · Ventas (solo mira): tarjetas grandes por pedido con TODAS las columnas de la planilla, o la tabla completa.
-· Supervisor de producción (rol «planificacion») y Coordinador: además cargan y publican la planilla.
+· Coordinador de producción (rol «planificacion») y Coordinador de mantenimiento: además cargan y publican la planilla.
 """
 import pandas as pd
 import streamlit as st
@@ -37,7 +37,7 @@ def render_produccion(usuario=None):
 
 
 # ----------------------------------------------------------------
-# Carga (supervisor)
+# Carga (coordinador de producción)
 # ----------------------------------------------------------------
 def _cargar(usuario):
     ui.encabezado("Cargar planilla de producción", "Arrastrá la planilla de planificación: se revisa y, si está bien, se publica para Ventas.")
@@ -113,7 +113,7 @@ def _ver():
             return
         st.title("Producción")
         if not pub:
-            ui.estado_vacio("Todavía no hay planilla publicada. Cuando el supervisor la cargue, aparece acá.")
+            ui.estado_vacio("Todavía no hay planilla publicada. Cuando el coordinador de producción la cargue, aparece acá.")
             return
         ahora = ui.ahora()
         st.caption(f"Datos de planta publicados {L.fecha_amigable(_local(pub.get('creado_en')), ahora)}"
