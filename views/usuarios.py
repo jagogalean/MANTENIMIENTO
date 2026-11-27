@@ -6,11 +6,13 @@ from views import ui
 
 # "operador" solo reporta fallas; "logistica" carga y ve Productividad; "consulta_asistencia" solo LEE
 # la asistencia (sin salarios); "asistencia" tiene acceso completo a Asistencia (con salarios).
-ROLES = ["admin", "gerente", "tecnico", "operador", "logistica", "asistencia", "consulta_asistencia"]
+# "planificacion" carga la planilla de producción; "ventas" solo la mira.
+ROLES = ["admin", "gerente", "tecnico", "operador", "logistica", "asistencia", "consulta_asistencia", "planificacion", "ventas"]
 NOMBRE_ROL = {
     "admin": "Coordinador (todo)", "gerente": "Gerencia (solo mira)", "tecnico": "Técnico (sus OTs)",
     "operador": "Operador (reporta fallas)", "logistica": "Logística (productividad)",
     "asistencia": "Asistencia (completo, con salarios)", "consulta_asistencia": "Consulta de asistencia (sin salarios)",
+    "planificacion": "Supervisor de producción (carga la planilla)", "ventas": "Ventas (solo mira la producción)",
 }
 
 
