@@ -33,6 +33,7 @@ from views.comparativo_cotizaciones import render_comparativo_cotizaciones
 from views.programacion import render_programacion
 from views.asistencia import render_asistencia
 from views.productividad import render_productividad
+from views.produccion import render_produccion
 
 # Módulos opcionales: si falta algún archivo, la app sigue funcionando y solo
 # esa pantalla avisa qué falta.
@@ -155,9 +156,10 @@ _CARGAS = {
     "plan_actividades": get_actividades,
     "plan_ejecuciones": get_plan_ejecuciones,
 }
+_SOLO_PRODUCCION = rol in ("ventas", "planificacion")      # no usan datos de mantenimiento: entran más rápido
 for _clave, _funcion in _CARGAS.items():
     if _clave not in st.session_state:
-        st.session_state[_clave] = _funcion()
+        st.session_state[_clave] = [] if _SOLO_PRODUCCION else _funcion()
 if "config_empresa" not in st.session_state:
     st.session_state.config_empresa = get_configuracion_empresa() or {}
 
@@ -279,6 +281,10 @@ def pagina_asistencia():
     render_asistencia(usuario)
 
 
+def pagina_produccion():
+    render_produccion(usuario)
+
+
 def pagina_asistencia_consulta():
     render_asistencia_consulta(usuario)
 
@@ -311,6 +317,7 @@ p_terceros = P(render_terceros, ui.con_contador("Terceros", venc_terceros), ":ma
 p_presupuesto = P(pagina_presupuesto, "Presupuesto", ":material/account_balance_wallet:", "presupuesto")
 p_reportes = P(render_reportes, "Reportes", ":material/description:", "reportes")
 p_productividad = P(pagina_productividad, "Productividad", ":material/factory:", "productividad")
+p_produccion = P(pagina_produccion, "Producción (ventas)", ":material/conveyor_belt:", "produccion")
 p_asistencia = P(pagina_asistencia, "Asistencia y horas extras", ":material/schedule:", "asistencia")
 p_tecnicos = P(render_tecnicos, "Técnicos", ":material/engineering:", "tecnicos")
 p_usuarios = P(render_usuarios, "Usuarios", ":material/manage_accounts:", "usuarios")
@@ -321,13 +328,13 @@ if rol == "admin":
         "Trabajo": [p_ots, p_preventivo, p_rutinas],
         "Activos": [p_maquinas, p_fallas, p_recepcion],
         "Almacén y compras": [p_repuestos, p_compras, p_comparativo, p_terceros],
-        "Gestión": [p_presupuesto, p_reportes, p_productividad, p_asistencia],
+        "Gestión": [p_presupuesto, p_reportes, p_productividad, p_produccion, p_asistencia],
         "Configuración": [p_tecnicos, p_usuarios],
     }
 elif rol == "gerente":
     paginas = {
         "": [p_inicio],
-        "Gestión": [p_presupuesto, p_reportes, p_productividad],
+        "Gestión": [p_presupuesto, p_reportes, p_productividad, p_produccion],
         "Trabajo": [p_rutinas],
     }
 elif rol == "tecnico":
@@ -344,6 +351,8 @@ elif rol == "logistica":
     paginas = [P(pagina_productividad, "Productividad", ":material/factory:", "productividad", default=True)]
 elif rol == "asistencia":
     paginas = [P(pagina_asistencia, "Asistencia y horas extras", ":material/schedule:", "asistencia", default=True)]
+elif rol in ("ventas", "planificacion"):
+    paginas = [P(pagina_produccion, "Producción", ":material/conveyor_belt:", "produccion", default=True)]
 elif rol == "consulta_asistencia":
     paginas = [P(pagina_asistencia_consulta, "Asistencia (consulta)", ":material/schedule:", "asistencia-consulta",
                  default=True)]
@@ -360,6 +369,7 @@ navegacion = st.navigation(paginas)
 NOMBRE_ROL = {
     "admin": "Coordinador", "gerente": "Gerencia", "tecnico": "Técnico", "operador": "Operador",
     "logistica": "Logística", "asistencia": "Asistencia", "consulta_asistencia": "Consulta de asistencia",
+    "planificacion": "Supervisor de producción", "ventas": "Ventas",
 }
 with st.sidebar:
     st.divider()
