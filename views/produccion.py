@@ -168,7 +168,7 @@ def _tarjeta(fila, r, columnas, ahora):
         st.markdown(f"### {ui.texto_md(r['cliente'])}")
         st.markdown(f":{L.COLOR[r['estado']]}-badge[{r['estado']}]" + (f"  ·  OC {ui.texto_md(oc)}" if oc else "")
                     + f"  ·  {ui.texto_md(r['codigo'] or '')} {ui.texto_md(r['referencia'] or '')}")
-        st.progress(r["avance"], text=f"Hecho {L.kg(r['producido'])} de {L.kg(r['solicitado'])} ({r['avance'] * 100:.0f} %)")
+        st.progress(float(r["avance"]), text=f"Hecho {L.kg(r['producido'])} de {L.kg(r['solicitado'])} ({r['avance'] * 100:.0f} %)")
         if r["estado"] == L.EN_PRODUCCION:
             st.markdown(f":orange[**Termina {L.fecha_amigable(r['fin'], ahora)}**]")
         elif r["estado"] == L.PROGRAMADO:
