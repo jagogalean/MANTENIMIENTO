@@ -90,5 +90,16 @@ def guardar_turno(payload):
     return supabase.rpc("prod_guardar_turno", {"p": payload}).execute().data
 
 
+def guardar_horas_planificadas(turno_id, horas):
+    """La función prod_guardar_turno no conoce esta columna (es nueva): se guarda aparte. Ver sql/productividad_planilla.sql."""
+    if isinstance(turno_id, list):
+        turno_id = turno_id[0] if turno_id else None
+    if isinstance(turno_id, dict):
+        turno_id = turno_id.get("id") or next(iter(turno_id.values()), None)
+    if turno_id is None:
+        return None
+    return supabase.table("prod_turnos").update({"horas_planificadas": horas}).eq("id", turno_id).execute().data
+
+
 def borrar_turno(turno_id):
     return supabase.table("prod_turnos").delete().eq("id", turno_id).execute().data
