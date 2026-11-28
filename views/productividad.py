@@ -8,6 +8,8 @@ import streamlit as st
 from database import productividad_db as db
 from database import exportacion as X
 from database import productividad_logica as P
+from database import productividad_planilla as PL
+from database import productividad_importar as IMP
 
 PRESETS = {
     "06:00 a 14:30": (time(6, 0), time(14, 30)), "14:30 a 22:30": (time(14, 30), time(22, 30)), "22:30 a 06:00": (time(22, 30), time(6, 0)),
@@ -149,7 +151,7 @@ def render_productividad(usuario):
 
     secciones = []
     if P.puede_cargar(usuario):
-        secciones.append("📝 Cargar turno")
+        secciones += ["📝 Cargar turno", "📥 Subir planilla"]
     secciones += ["📋 Registros", "📊 Indicadores", "⬇️ Exportar (Power BI)"]
     if P.puede_administrar(usuario):
         secciones.append("⚙️ Catálogos")
@@ -159,9 +161,14 @@ def render_productividad(usuario):
     flash = st.session_state.pop("prod_flash", None)
     if flash:
         getattr(st, flash[0])(flash[1])
+    extra = st.session_state.pop("prod_flash_extra", None)
+    if extra:
+        st.warning(extra)
 
     if seccion.startswith("📝"):
         _seccion_cargar(usuario, cat)
+    elif seccion.startswith("📥"):
+        _seccion_importar(usuario, cat)
     elif seccion.startswith("📋"):
         _seccion_registros(usuario, cat)
     elif seccion.startswith("📊"):
@@ -220,9 +227,16 @@ def _formulario(usuario, cat, clave, existente=None):
     h_ini = c2.time_input("Hora de inicio", key=k_ini, step=300)
     h_fin = c3.time_input("Hora de fin", key=k_fin, step=300)
     c4.selectbox("Turno habitual (completa las horas)", ["Elegir…"] + list(PRESETS), key=k("preset"), on_change=aplicar_preset)
+    duracion = None
     if h_ini != h_fin:
         i, f = P.limites_turno(fecha, h_ini, h_fin)
-        st.caption(f"Duración del turno: **{P.horas(f - i):.1f} h**" + (" (termina al día siguiente)" if f.date() != i.date() else ""))
+        duracion = P.horas(f - i)
+        st.caption(f"Duración del turno: **{duracion:.1f} h**" + (" (termina al día siguiente)" if f.date() != i.date() else ""))
+    # Horas planificadas (columna «Total Horas Planificadas» de la planilla): vacío o 0 = toda la duración del turno
+    plan_guardada = float(t.get("horas_planificadas") or 0)
+    planificadas = st.number_input("Horas planificadas", min_value=0.0, max_value=24.0, step=0.5, value=plan_guardada, key=k("planificadas"),
+                                   help="Las horas que se planificó producir en este turno. Dejala en 0 si se planificó todo el turno "
+                                        f"({duracion:.1f} h)." if duracion else "Dejala en 0 si se planificó todo el turno.")
 
     c5, c6, c7 = st.columns(3)
     operadores = list(cat["operadores"])
@@ -235,8 +249,11 @@ def _formulario(usuario, cat, clave, existente=None):
 
     c8, c9, c10, c11 = st.columns([2, 1, 1, 1])
     producto = c8.text_input("Producto", value=t.get("producto") or "", placeholder="Ej: FILM LAMINA 960X85 PA BCO", key=k("producto"))
-    ancho = c9.number_input("Ancho (cm)", min_value=0.0, step=1.0, value=float(t.get("ancho_cm") or 0), key=k("ancho"))
-    espesor = c10.number_input("Espesor (µm)", min_value=0.0, step=1.0, value=float(t.get("espesor_um") or 0), key=k("espesor"))
+    # En la base el ancho sigue guardado en cm (ancho_cm); en pantalla y en el Excel va en mm, como la planilla.
+    ancho_mm = c9.number_input("Ancho (mm)", min_value=0.0, step=1.0, value=round(float(t.get("ancho_cm") or 0) * 10, 1), key=k("ancho_mm"),
+                               help="En milímetros, como en la planilla (ej.: 960).")
+    espesor = c10.number_input("Espesor Mic", min_value=0.0, step=1.0, value=float(t.get("espesor_um") or 0), key=k("espesor"),
+                               help="En micras, como en la planilla (ej.: 85).")
     densidad = c11.number_input("Densidad", min_value=0.01, step=0.01, value=float(t.get("densidad") or P.DENSIDAD_DEFECTO), format="%.2f", key=k("densidad"),
                                 help="0,92 por defecto (la del Excel). Cambiala si el material es otro.")
 
@@ -284,7 +301,7 @@ def _formulario(usuario, cat, clave, existente=None):
     for f in rechazos:
         f["kg"], f["motivo"] = _n(f.get("kg")), _txt(f.get("motivo")) or None
     turno = {"fecha": fecha, "hora_inicio": h_ini, "hora_fin": h_fin, "op": op.strip(), "item": item.strip(), "operador": operador,
-             "producto": producto.strip(), "ancho_cm": ancho or None, "espesor_um": espesor or None, "densidad": densidad,
+             "producto": producto.strip(), "ancho_cm": (ancho_mm / 10) if ancho_mm else None, "horas_planificadas": planificadas or None, "espesor_um": espesor or None, "densidad": densidad,
              "familia": None if familia == SIN_FAMILIA else familia, "maquina": fam.get("maquina"), "barrera": fam.get("barrera"),
              "color": fam.get("color"), "kg_producidos": kg, "scrap_refile_kg": refile, "observaciones": obs.strip()}
     ev = P.evaluar_formulario(turno, setups, paradas, rechazos, cat["categoria_falla"])
@@ -315,10 +332,15 @@ def _formulario(usuario, cat, clave, existente=None):
             return
         try:
             payload = db.construir_payload(turno, ev, rechazos, usuario, turno_id=t.get("id"))
-            db.guardar_turno(payload)
+            nuevo_id = db.guardar_turno(payload)
         except Exception as e:
             st.error(f"No se pudo guardar: {e}")
             return
+        try:
+            db.guardar_horas_planificadas(t.get("id") or nuevo_id, turno.get("horas_planificadas"))
+        except Exception as e:
+            st.session_state["prod_flash_extra"] = ("El turno se guardó, pero no las horas planificadas: falta correr sql/productividad_planilla.sql "
+                                                    f"en Supabase ({type(e).__name__}).")
         _invalidar(todo=False)
         st.session_state["prod_flash"] = ("success", f"✅ Turno guardado: OP {op.strip()}, {operador}, {fecha:%d/%m/%Y}.")
         st.rerun()
@@ -329,7 +351,8 @@ def _resumen_vivo(c):
     if not c:
         return
     m = st.columns(7)
-    m[0].metric("Horas del turno", _fmt(c["horas_turno"], 1))
+    m[0].metric("Horas del turno", _fmt(c["horas_turno"], 1), help=f"Planificadas: {_fmt(c.get('h_planificadas'), 1)} h · "
+                                                                      f"Operativas (planificadas - paradas): {_fmt(c.get('h_operativas'), 1)} h")
     m[1].metric("Setup", _fmt(c["h_setup"], 1, " h"))
     m[2].metric("Paradas", _fmt(c["h_parada"], 1, " h"))
     m[3].metric("Producción neta", _fmt(c["h_prod"], 1, " h"))
@@ -696,25 +719,111 @@ def _catalogo_familias(familias):
 # Exportar todo a Excel (para Power BI)
 # ----------------------------------------------------------------
 def _seccion_exportar(usuario):
-    st.write("Descargá **toda** la productividad en un Excel pensado para Power BI: cada hoja es una tabla con nombre (turnos con todos sus cálculos, "
-             "setups, paradas, rechazos, familias, catálogos y calendario), más un diccionario que explica cada columna. No contiene salarios.")
+    st.markdown("**Excel igual a la planilla de logística** (hoja «Producción» con las mismas 44 columnas, y «Base de datos»). "
+                "Es el archivo que lee el Power BI *Productividad Vitopel 1.5*: guardalo como **Productividad.xlsx** en la carpeta que usa el "
+                "Power BI (C:\\Vitopel o tu OneDrive), reemplazando el anterior, y en Power BI tocá **Actualizar**.")
     desde, hasta, opcion = _elegir_periodo("exp", indice=PERIODOS.index("Todo"))
     firma = f"{opcion}|{desde}|{hasta}"
-    if st.button("📦 Preparar el Excel", type="primary", key="prod_exp_preparar"):
+    if st.button("📦 Preparar Productividad.xlsx", type="primary", key="prod_exp_preparar"):
         try:
             with st.spinner("Armando el archivo…"):
                 turnos, setups, paradas, rechazos = db.listar_todo(desde, hasta)
-                contenido = X.excel_productividad(turnos, setups, paradas, rechazos, db.listar_familias(), db.listar_catalogo(), (usuario or {}).get("nombre"))
+                enr = P.enriquecer(turnos, setups, paradas, rechazos)
+                familias, catalogo = db.listar_familias(), db.listar_catalogo()
+                planilla = PL.excel_planilla(enr, catalogo, familias)
+                detallado = X.excel_productividad(turnos, setups, paradas, rechazos, familias, catalogo, (usuario or {}).get("nombre"))
         except Exception as e:
             st.error(f"No se pudo armar el archivo: {e}")
             return
-        st.session_state["prod_exp"] = {"firma": firma, "bytes": contenido, "turnos": len(turnos), "nombre": f"productividad_powerbi_{X.hoy_paraguay():%Y%m%d}.xlsx"}
+        st.session_state["prod_exp"] = {"firma": firma, "planilla": planilla, "detallado": detallado, "turnos": len(enr),
+                                        "nombre_detallado": f"productividad_detallado_{X.hoy_paraguay():%Y%m%d}.xlsx"}
     listo = st.session_state.get("prod_exp")
-    if listo and listo["firma"] == firma:
+    if listo and listo["firma"] == firma and "planilla" in listo:
         st.success(f"Listo: {listo['turnos']} registro(s) de producción.")
-        st.download_button("⬇️ Descargar el Excel para Power BI", data=listo["bytes"], file_name=listo["nombre"], key="prod_exp_descargar",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("⬇️ Descargar Productividad.xlsx (para el Power BI)", data=listo["planilla"], file_name="Productividad.xlsx", key="prod_exp_descargar",
+                           type="primary", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with st.expander("Otro formato: Excel detallado (una tabla por hoja: turnos, setups, paradas, rechazos…)"):
+            st.download_button("⬇️ Descargar el Excel detallado", data=listo["detallado"], file_name=listo["nombre_detallado"], key="prod_exp_detallado",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     elif listo:
-        st.info("Cambiaste el período: tocá «Preparar el Excel» de nuevo.")
-    st.caption("En Power BI: Obtener datos → Libro de Excel → elegí el archivo → marcá las tablas. Para actualizar, volvé a descargarlo con el mismo nombre "
-               "y en la misma carpeta, y en Power BI tocá «Actualizar». La hoja «Leeme» del archivo explica todo.")
+        st.info("Cambiaste el período: tocá «Preparar Productividad.xlsx» de nuevo.")
+    st.caption("Si un turno tuvo varias fallas, setups o rechazos, sale en varios renglones seguidos (uno por cada uno), igual que se carga en la planilla. "
+               "Los kilos y las horas del turno van solo en el primer renglón, así Power BI no los suma dos veces.")
+
+
+# ----------------------------------------------------------------
+# Subir la planilla de Excel (para lo que se cargó solo en el Excel)
+# ----------------------------------------------------------------
+def _seccion_importar(usuario, cat):
+    st.write("¿Alguien cargó los turnos solo en la **planilla de Excel** y no en la app? Subí la planilla acá: se cargan solos los turnos "
+             "que todavía no están en la app. Los que ya están (mismo operador y horario) **se saltean**, así que podés subir la planilla "
+             "entera todas las veces sin duplicar nada.")
+    n = st.session_state.get("prod_imp_n", 0)
+    archivo = st.file_uploader("Planilla de productividad (.xlsx, con la hoja «Producción»)", type=["xlsx", "xlsm"], key=f"prod_imp_{n}")
+    if archivo is None:
+        return
+    contenido = archivo.getvalue()
+    firma = (archivo.name, len(contenido), st.session_state.get("prod_datos_v", 0))
+    analisis = st.session_state.get("prod_imp_analisis")
+    if not analisis or analisis["firma"] != firma:
+        try:
+            with st.spinner("Revisando la planilla…"):
+                desde, hasta = IMP.rango_fechas(contenido)
+                existentes = db.listar_turnos(desde - timedelta(days=1), hasta + timedelta(days=1)) if desde else []
+                resultado = IMP.analizar(contenido, existentes, cat["categoria_falla"])
+        except ValueError as e:
+            st.error(str(e))
+            return
+        except Exception as e:
+            st.error(f"No se pudo revisar la planilla: {e}")
+            return
+        analisis = {"firma": firma, **resultado}
+        st.session_state["prod_imp_analisis"] = analisis
+
+    nuevos, repetidos, errores = analisis["nuevos"], analisis["repetidos"], analisis["errores"]
+    if analisis["desde"]:
+        st.caption(f"Planilla del {analisis['desde']:%d/%m/%Y} al {analisis['hasta']:%d/%m/%Y} · {analisis['renglones']} renglones.")
+    m = st.columns(3)
+    m[0].metric("Turnos para cargar", len(nuevos))
+    m[1].metric("Ya estaban en la app", len(repetidos), help="Mismo operador con horario superpuesto: no se vuelven a cargar.")
+    m[2].metric("Con errores", len(errores), help="No se cargan. Corregí la planilla (o cargalos a mano) y volvé a subirla.")
+    if nuevos:
+        with st.expander(f"Ver los {len(nuevos)} turnos que se van a cargar"):
+            st.dataframe(pd.DataFrame([{"Renglón": x["donde"].replace("Renglón ", ""), "Fecha": x["turno"]["fecha"].strftime("%d/%m/%Y"),
+                                        "Turno": f"{x['turno']['hora_inicio']:%H:%M} a {x['turno']['hora_fin']:%H:%M}", "OP": x["turno"]["op"],
+                                        "Operador": x["turno"]["operador"], "Kg": x["turno"]["kg_producidos"],
+                                        "Setups": len(x["evaluacion"]["setups"]), "Fallas": len(x["evaluacion"]["paradas"])} for x in nuevos]),
+                         hide_index=True, width="stretch")
+    if errores:
+        with st.expander(f"Ver los {len(errores)} renglones con errores (no se cargan)", expanded=not nuevos):
+            st.dataframe(pd.DataFrame([{"Renglón": str(e["renglon"]).replace("Renglón ", ""), "Qué pasa": e["motivo"]} for e in errores]),
+                         hide_index=True, width="stretch")
+    for a in analisis["avisos"][:10]:
+        st.caption("ℹ️ " + a)
+    operadores = {o.casefold() for o in cat["operadores"]}
+    desconocidos = sorted({x["turno"]["operador"] for x in nuevos if x["turno"]["operador"].casefold() not in operadores})
+    if desconocidos:
+        st.warning("Estos operadores no están en Catálogos (se cargan igual, pero revisá que estén bien escritos): " + ", ".join(desconocidos))
+    if not nuevos:
+        st.info("No hay turnos nuevos para cargar: todo lo de la planilla ya está en la app" + (" o tiene errores." if errores else "."))
+        return
+    if st.button(f"📥 Cargar {len(nuevos)} turno(s) en la app", type="primary", key="prod_imp_cargar"):
+        ok, fallas, barra = 0, [], st.progress(0.0, text="Cargando…")
+        for i, x in enumerate(nuevos, 1):
+            try:
+                payload = db.construir_payload(x["turno"], x["evaluacion"], x["rechazos"], usuario)
+                nuevo_id = db.guardar_turno(payload)
+                try:
+                    db.guardar_horas_planificadas(nuevo_id, x["turno"].get("horas_planificadas"))
+                except Exception:
+                    pass                                       # falta la columna: el turno igual quedó guardado
+                ok += 1
+            except Exception as e:
+                fallas.append(f"{x['donde']}: {e}")
+            barra.progress(i / len(nuevos), text=f"Cargando… {i} de {len(nuevos)}")
+        _invalidar(todo=False)
+        st.session_state["prod_imp_n"] = n + 1
+        st.session_state.pop("prod_imp_analisis", None)
+        st.session_state["prod_flash"] = (("success", f"✅ Se cargaron {ok} turno(s) desde la planilla.") if not fallas else
+                                          ("warning", f"Se cargaron {ok} turno(s); {len(fallas)} no se pudieron guardar: " + " · ".join(fallas[:3])))
+        st.rerun()
