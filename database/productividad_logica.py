@@ -148,10 +148,11 @@ def metros_lineales(kg, ancho_cm, espesor_um, densidad=DENSIDAD_DEFECTO):
 # ----------------------------------------------------------------
 # Cálculo de un tramo
 # ----------------------------------------------------------------
-def calcular(inicio, fin, setups, paradas, rechazos, kg, scrap_refile, ancho_cm, espesor_um, densidad):
+def calcular(inicio, fin, setups, paradas, rechazos, kg, scrap_refile, ancho_cm, espesor_um, densidad, horas_planificadas=None):
     """
     setups / paradas: listas de dicts con 'inicio' y 'fin' (datetime); setups con 'scrap_kg'; paradas con 'categoria'.
     rechazos: lista de dicts con 'kg'. Devuelve todos los números del tramo.
+    horas_planificadas: las del turno si no se cargaron. Horas operativas = planificadas - paradas (como en la planilla).
     """
     h_turno = horas(fin - inicio)
     h_setup = round(sum(horas(s["fin"] - s["inicio"]) for s in setups), 4)
@@ -166,8 +167,9 @@ def calcular(inicio, fin, setups, paradas, rechazos, kg, scrap_refile, ancho_cm,
     scrap_total = scrap_setup + _num(scrap_refile) + kg_rech
     procesado = kg + scrap_total
     metros = metros_lineales(kg, ancho_cm, espesor_um, densidad)
+    h_plan = _num(horas_planificadas) if _num(horas_planificadas) > 0 else h_turno
     return {
-        "horas_turno": h_turno, "h_setup": h_setup, "h_parada": h_parada, "h_prod": h_prod,
+        "horas_turno": h_turno, "h_planificadas": round(h_plan, 4), "h_operativas": round(max(h_plan - h_parada, 0), 4), "h_setup": h_setup, "h_parada": h_parada, "h_prod": h_prod,
         "h_parada_cat": {k: round(v, 4) for k, v in por_cat.items()},
         "kg": kg, "kg_h": (kg / h_prod) if h_prod > 0 else None,
         "metros": metros, "metros_h": (metros / h_prod) if h_prod > 0 and metros else None,
@@ -236,7 +238,9 @@ def evaluar_formulario(turno, setups, paradas, rechazos, categorias_falla=None):
             errores.append(f"Setup {i}: el scrap no puede ser negativo.")
 
     calculo = calcular(inicio, fin, setups_r, paradas_r, rechazos, turno.get("kg_producidos"), turno.get("scrap_refile_kg"),
-                       turno.get("ancho_cm"), turno.get("espesor_um"), turno.get("densidad"))
+                       turno.get("ancho_cm"), turno.get("espesor_um"), turno.get("densidad"), turno.get("horas_planificadas"))
+    if _num(turno.get("horas_planificadas")) > calculo["horas_turno"] + 1e-6:
+        errores.append(f"Las horas planificadas ({_num(turno.get('horas_planificadas')):.1f} h) no pueden ser más que la duración del turno ({calculo['horas_turno']:.1f} h).")
     if calculo["h_prod"] < -1e-6 and not errores:
         errores.append(f"Los setups y las paradas suman {calculo['h_setup'] + calculo['h_parada']:.1f} h y el turno dura {calculo['horas_turno']:.1f} h.")
     kg = _num(turno.get("kg_producidos"))
@@ -292,7 +296,8 @@ def enriquecer(turnos, setups, paradas, rechazos):
         s = [x for x in hijos["s"][t["id"]] if x["inicio"] and x["fin"]]
         p = [x for x in hijos["p"][t["id"]] if x["inicio"] and x["fin"]]
         r = hijos["r"][t["id"]]
-        calculo = calcular(inicio, fin, s, p, r, t.get("kg_producidos"), t.get("scrap_refile_kg"), t.get("ancho_cm"), t.get("espesor_um"), t.get("densidad"))
+        calculo = calcular(inicio, fin, s, p, r, t.get("kg_producidos"), t.get("scrap_refile_kg"), t.get("ancho_cm"), t.get("espesor_um"), t.get("densidad"),
+                           t.get("horas_planificadas"))
         resultado.append({**t, "inicio": inicio, "fin": fin, "setups": s, "paradas": p, "rechazos": r, "calculo": calculo})
     return resultado
 
